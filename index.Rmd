@@ -1,0 +1,43 @@
+--- 
+title: "Multivariate Statistics Cookbook"
+author: "Brendon Mizener"
+date: "`r Sys.Date()`"
+site: bookdown::bookdown_site
+documentclass: book
+classoption: openany
+bibliography: [RM3Cookbook.bib, packages.bib]
+biblio-style: apalike
+link-citations: yes
+urlcolor: blue
+description: "This is a bookdown document on multivariate analyses created as final project for Research Methods 3, Fall 2019. Professor: Dr. Herve Abdi; TA: Ju-Chi Yu."
+geometry: margin=.75in
+fontsize: 11pt
+header-includes:
+      - \usepackage{float}
+---
+```{r, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = FALSE)
+```
+
+# Introduction {#intro}
+
+This is a Rmarkdown/bookdown document created using the bookdown package for RMarkdown. It was created as the final project for Research Methods 3: Topics in Multivariate Analysis, taken in the fall semester of 2019 from Dr. Herve Abdi. The TA was Ju-Chi Yu. Much of the code comes from class lectures or templates provided by them. Each of the chapters in the book is a different multivariate analysis technique. There are three fundamental types of analyses presented. Single table, two-table, and multi- (three or more) table. 
+
+For more information on the format of this document, check out the [bookdown website](https://bookdown.org/yihui/rmarkdown/bookdown-project.html).
+
+The majority of the references are works by Dr. Abdi, and can be found [here](https://personal.utdallas.edu/~herve/). The references for each chapter are provided and will be listed in full in the [bibliography](#bib).
+
+## How to Use this Book
+
+Each of the chapters contains a single multivariate technique, explanations, analyses, plots, and a general guideline for how to use each, and what kind of data are best suited to each type of analysis. Where possible, links or citations are provided to various articles, book chapters, and other resources to offer more in-depth guidance for each of the techniqes. The data analyzed come from a few sources. The introduction has an in-depth description of each of the datasets, and each of the recipe pages will have a more brief description of the data.
+
+
+```{r include=FALSE}
+# automatically create a bib database for R packages
+knitr::write_bib(c(
+  .packages(), 'bookdown', 'knitr', 'rmarkdown', 'tidyverse', 'kableExtra', 'pander', 'corrplot', 
+               'ggplotify', 'grid', 'gridExtra', 'PTCA4CATA', 'ExPosition', 'TExposition', 'MExPosition', 'InPosition', 
+               'data4PCCAR', 'ggpubr', 'factoextra', 'wesanderson', 'TInPosition', 'DistatisR', 'Matrix'
+  
+), 'packages.bib')
+```

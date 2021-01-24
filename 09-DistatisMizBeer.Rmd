@@ -1,0 +1,532 @@
+# (PART\*) Part IV: Multi-Table Techniques {-}
+
+
+# DiSTATIS {#DiSTATIS}
+
+```{r, include=FALSE}
+rm(list = ls())
+
+# libraries ----
+
+#devtools::install_github('HerveAbdi/data4PCCAR')
+#install.packages('TInPosition') # if needed
+#::install_github('HerveAbdi/PTCA4CATA')
+
+
+library(tidyverse)
+library(corrplot)
+library(ggrepel)
+library(gridExtra)
+library(grid)
+library(ggplotify)
+library(kableExtra)
+library(knitr)
+library(gplots)
+suppressMessages(library(factoextra))
+suppressMessages(library(ggpubr))
+suppressMessages(library(data4PCCAR) )
+suppressMessages(library(PTCA4CATA))
+library(wesanderson)
+library(MExPosition)
+library(DistatisR)
+suppressMessages(library(Matrix))
+library(pander)
+
+#devtools::install_github('HerveAbdi/DistatisR')
+
+```
+
+## Intro to DiSTATIS
+
+This technique is a generalization of the STATIS technique [@Abdi2006] that allows us to analyze a set of distance matrices for similarity between raters/judges and the objects being rated. STATIS is an acronym for "Structuration des Tableaux à Trois Indices de la Statistique".  There are a number of background steps that are involved in this procedure, for more information check out [this article](https://personal.utdallas.edu/~herve/abdi_Wires_AWVB2012_Final.pdf) and [this article](https://personal.utdallas.edu/~herve/abdi-distatis2005.pdf). From this technique we can evaluate clustering, similarity, and factor scores maps similar to those presented in MFA.
+
+The data for this example require a specific kind of preparation. In an experiment, survey, or other, you ask judges to rate a set of objects by putting them into groups. The judges have to use at least two groups, but can use as many groups as they like. Once you have your set of ratings (in this case we have 51 judges rating 30 beers), you nominalize the data so that you have a matrix that has as many columns as the judge used groups, and you use that matrix as one "page" or "slice" in a three dimensional set (cube) of  matrices that measure the similarity and difference of the the objects.
+
+The sum of the times that a judge rates two objects as being in a different category or group then acts as the value for the difference (or rather, distance) between the objects. However, because any beer can only ever be in the same group as itself, technically we end up with 0s on the diagonal. To solve this we double-center the matrix and multiply by -.5.
+
+Additionally, if you allow the judges to rate the objects qualitatively, you end up with a set of words to describe those objects, which can be projected onto the factor space to see how they correspond to the objects themselves.
+
+You can also use qualitative information on the judges as a design factor for groups the analysis.
+
+
+### Strengths & Weaknesses
+**Strengths**  
+  - This is a great technique to compare similarity between objects without necessitating the use of an absolute scale.  
+  - Allows for biplots that contain object barycenters with rater projections, as well as attribute barycenters based on rater uses of the descriptors.  
+  - Can be used to create dendrograms and k-means clusters, which are also useful tools for assessing similarity.
+  
+**Weaknesses**   
+  - Not really a weakness, per se, but the amount of plots and analyses possible using this technique is quite high, so it takes some time to go through the results and find what's useful and what's not in terms of forming your interpretation.
+
+### Dos and Don'ts
+
+**Do:**  
+  - Make sure you're sure of your grouping variables.  
+  - Make sure you check through your data when processing/preprocessing.  
+**Don't:**    
+  - Try to cram too much information into a single plot. The visualizations should clarify, not obfuscate, the data/the results.
+
+
+**Research Questions**
+Questions for this technique can be about either (both) the objects being observed and the raters rating them. A comprehensive analysis of the data will involve both group descriptors for the raters and analysis of the attributes the raters assigned to the objects.  
+  - What fundamental features of these objects cause them to be differentiated along these principal components?  
+  - Are there any systematic ways in which the object ratings by the judges differ? What causes those systematic differences?  
+  - What can we learn about the tendencies of the judges from the rating data and the systematic differences identified in the previous question?  
+  - What groups arise consistently as a function of these ratings and are there characteristics that aren't immediately apparent that are causing those groups to arise?  
+  
+
+## Data
+
+As mentioned above, this dataset is a set of 30 beers rated by 51 participants. The beers are mostly Mexican and Central American beers, with a few European beers thrown in.
+
+The are no qualitative descriptors assigned by the judges for the beers, but we have two pieces of information for the judges. We have their gender, and whether or not the judges prefer "industrial" or "craft" beers. I think it would be more interesting to see whether or not there are rating differences based on drink preference, so we're going to use that variable as our design variable.
+
+
+```{r}
+Raw_Data <- read.csv('beer_data.csv', row.names = 1)
+Sorting_Data <- Raw_Data[-c(1:3),]
+Design_Data <- Raw_Data[1:2,]
+
+Design_Data <- data.frame(t(Design_Data))
+
+pander(x = Sorting_Data[1:5, 1:5])
+
+```
+
+## Data Processing and Analysis
+
+
+### The judges
+
+This first bit of code runs the nominalization that we needed from earlier. It also sets our design variable to the 2nd column of the judges' info (beer preference) and assigns colors to the judges based on their groups. We'll see what that looks like later when we plot the similarity of the judges.
+
+```{r echo = TRUE}
+# our design variable - remember we only have 2 pieces
+# of information the judges, this selects the second column 
+# of the design_data matrix as our design variable
+k <- 2
+descJudges <- Design_Data[,k ]
+nominal.Judges <- makeNominalData(as.data.frame(descJudges))
+# get the colors using this function from the prettygraphs package
+color4Judges.list <- createColorVectorsByDesign(nominal.Judges)
+```
+
+### 3.1 Distance Cube & DiSTATIS
+
+This creates our distance cube we need to run the DiSTATIS and runs the analysis on it, saving the results in Distatis.res
+
+```{r distance and analysis, echo = TRUE}
+DistanceCube <- DistanceFromSort(Sorting_Data)
+Distatis.res <- distatis(DistanceCube)
+```
+
+### Inference
+
+In order to run our bootstrapping for the judge means, we need to get the factors from the DiSTATIS results. Then we aggregate the judges and run a bootstrap analysis on the judge means.
+
+```{r inference and more, echo = TRUE}
+# Get the factors from the Cmat analysis
+G <- Distatis.res$res4Cmat$G
+# Compute the mean by groups of HJudges
+JudgesMeans.tmp <- aggregate(G, list(descJudges), mean)
+JudgesMeans <- JudgesMeans.tmp[,2:ncol(JudgesMeans.tmp )]
+rownames(JudgesMeans) <- JudgesMeans.tmp[,1]
+# Get the bootstrap estimates using this function from PTCA4CATA package
+BootCube <- Boot4Mean(G, design = descJudges, 
+                      niter = 100, suppressProgressBar = TRUE)
+```
+
+## Results 
+
+### Heatmap
+
+Before we used heatmaps to look at frequency of occurrence, or relative values of observations/variables in a given dataset to look at trends in the data. here we're doing something slightly different. In the plot below, we see how the judges rated the beers, and the relative distance between each of the judges at the intersection. The darker cells mean that the judges are further away from one another, i.e. they rated the beers more differently, and the lighter cells indicate that the judges rated the beers more similarly to one another. The key shows us those values and also shows us what the density distribution of similarity is. There's a lot that went into constructing this plot, so check out the RMD for the specifics on how this was modified.
+
+```{r, fig.height  = 6, fig.align = "center", echo = FALSE}
+lmat = rbind(c(0,3,0),c(2,1,0),c(0,4,0))
+lwid = c(.5,4,.5)
+lhei = c(1,4,1.5)
+GHeat <- heatmap.2(Distatis.res$res4Cmat$C, #density.info = 'none', 
+                   dendrogram = 'none', trace = "none", Rowv = F, Colv = F,
+                   main = "Heatmap of the Similarity of Judges",
+                   lmat = lmat, lhei = lhei, lwid = lwid, 
+                   key.xtickfun = function() {
+                                  breaks <- parent.frame()$breaks
+                                  return(list(
+                                          at=parent.frame()$scale01(c(breaks[1:15],
+                                                  breaks[length(breaks)])),
+                                          labels=c(as.character(round(breaks[1:15], 2)),
+                                          as.character(round(breaks[length(breaks)], 2)))
+                                           ))}
+                   )
+```
+
+
+### Partial map by judges
+
+This section of the analysis helps us to get the correct loadings for our partial factor scores. We'll use the results from it later.
+
+```{r Partial map by judges, echo = TRUE}
+F_j <- Distatis.res$res4Splus$PartialF
+alpha_j <- Distatis.res$res4Cmat$alpha
+# create the groups of Judges
+#groupsOfJudges <- substr(names(alpha_j),1,1)
+groupsOfJudges <- descJudges
+code4Groups <- unique(groupsOfJudges)
+nK <- length(code4Groups)
+# initialize F_K and alpha_k
+F_k <- array(0, dim = c(dim(F_j)[[1]], dim(F_j)[[2]],nK))
+dimnames(F_k) <- list(dimnames(F_j)[[1]], dimnames(F_j)[[2]], code4Groups)
+alpha_k <- rep(0, nK)
+names(alpha_k) <- code4Groups
+Fa_j <- F_j
+# A horrible loop
+for (j in 1:dim(F_j)[[3]]){ Fa_j[,,j] <- F_j[,,j] * alpha_j[j] }
+for (k in 1:nK){
+                lindex <- groupsOfJudges == code4Groups[k]
+                alpha_k[k] <- sum(alpha_j[lindex])
+                F_k[,,k] <- (1/alpha_k[k])*apply(Fa_j[,,lindex],c(1,2),sum)
+                }
+```
+
+
+### Scree for Judges
+
+Here we have our scree plot for the judges. The dimensionality of this screeplot is determined by the number of judges included in the analysis. However, it looks like there's really one one dimension worth looking at, perhaps 2, and we'll see how that shakes out in our factor plots. See [PCA](#PCA) for more on reading scree plots.
+
+```{r, out.width='75%', fig.align='center'}
+scree.rv.out <- PlotScree(ev = Distatis.res$res4Cmat$eigValues,
+                          title = "RV-map: Explained Variance per Dimension", 
+                          plotKaiser =  TRUE)
+```
+
+### Factor Map for the Judges
+
+This plot shows us how similarly the judges rated the beers. The blue dots indicate the judges that said they preferred 'Industrial' type beers and the green dots indicate judges that said they preferred 'craft' type beers.  Although the dots seem pretty well mixed, it does look the the majority of the Industrial preferring judges are loaded negatively on the second dimension and the majority craft preferring judges are loaded positively on the second component.
+
+```{r echo = TRUE}
+gg.rv.graph.out <- createFactorMap(X = Distatis.res$res4Cmat$G, 
+                                   axis1 = 1, axis2 = 2, 
+        title = "Judges: Rv Map by Beer Preference (Industry/Craft)",
+                                   col.points = color4Judges.list$oc,
+                                   col.labels = color4Judges.list$oc)
+# create the labels for the dimensions of the RV map
+labels4RV <- createxyLabels.gen(lambda = Distatis.res$res4Cmat$eigValues,
+                                tau = Distatis.res$res4Cmat$tau,
+                                axisName = "Dimension ")
+# # Create the map from the layers
+# Here with labels and dots
+a2a.gg.RVmap <- gg.rv.graph.out$zeMap + labels4RV
+# Here with colored dots only
+a2b.gg.RVmap <- gg.rv.graph.out$zeMap_background + 
+                gg.rv.graph.out$zeMap_dots + labels4RV
+a2a.gg.RVmap
+```
+
+#### Factor Map for the Judges with Bootstrapped Confidence interval
+
+As we can see below, the confidence intervals for the means of the groups overlap, which indicates that there really isn't much difference in how the judges grouped the beers overall. We'll see later why that might be. Ch
+
+```{r echo = TRUE}
+# First the means
+# A tweak for colors
+in.tmp <- sort(rownames(color4Judges.list$gc), index.return = TRUE)$ix
+col4Group <- color4Judges.list$gc[in.tmp]
+#
+gg.rv.means <- createFactorMap(JudgesMeans, 
+                               axis1 = 1, axis2 = 2,
+                               constraints = gg.rv.graph.out$constraints,
+                               col.points = col4Group ,
+                               alpha.points = 1, # no transparency
+                               col.labels = col4Group, 
+                               display.labels = TRUE
+                               )
+# Luckily R is smart enough to know when we've intentionally broken a line
+# We've done this here so you can see how we rename 
+# the dimensions of the bootcube.
+dimnames(BootCube$BootCube)[[2]] <- paste0('dim ',1: 
+                                           dim(BootCube$BootCube)[[2]]) 
+GraphElli.rv <- MakeCIEllipses(BootCube$BootCube[,1:2,],
+                               names.of.factors = c("dim 1","dim 2"),
+                               col = col4Group,
+                               p.level = .95)
+a2d.gg.RVMap.CI <- a2b.gg.RVmap + gg.rv.means$zeMap_dots + 
+                   GraphElli.rv + gg.rv.means$zeMap_text
+a2d.gg.RVMap.CI
+```
+
+## Cluster analysis
+
+### Tree Plot
+
+The plot below is a tree diagram showing how the groups of judges rated the beers. Note that the main branch point at the top of the chart shows you the two main groups. In a perfect world, the design variable we chose would be reflected by that split. Needless to say, that is not what happened. The `fviz_dend` allows us to select groups for the dendrogram using the `rect` parameter, so we can see what groupings arise. We get groups for a dendrogram not by following the lines to where they split, but by drawing horizontal lines through the plot, and seeing what splits off. It would be possible to select anywhere between 2 and 6 groups, but three makes the most logical sense. The closer the splits are, the harder it is to justify. It's also important generally to make as few assumptions as possible, but the more groups you try to break apart, the more assumptions you're making. In a larger dataset, it might make more sense to make more divisions (things like demographics, age groups, etc.) but here we don't have any of that information so it wouldn't make sense to make those assumptions.  
+
+```{r echo = TRUE}
+D <- dist(Distatis.res$res4Cmat$G, method = "euclidean")
+fit <- hclust(D, method = "ward.D2")
+a05.tree4participants <- fviz_dend(fit, k = 3,
+                         k_colors = c('burlywood4', 'coral1', 'cornflowerblue'),
+                         label_cols = color4Judges.list$oc[fit$order],
+                         cex = .7, xlab = 'Participants',
+                         main = 'Cluster Analysis: Participants', rect = TRUE)
+a05.tree4participants
+```
+
+
+### K-Means
+
+The plot below finds three barycenters of the judges and assigns them to colors groups based on that similarity. Note, however, that these groups aren't the same groups as we see above in the dendrogram. With more information on the participants, these differences might be more interpretable, but I'm not entirely sure what's going on here.
+
+```{r echo = TRUE, out.width = "80%"}
+# First plain k-means
+set.seed(42)
+participants.kMeans <- kmeans(x = G , centers = 3)
+# Again, breaking lines...
+col4Clusters <- createColorVectorsByDesign(
+                makeNominalData(as.data.frame(participants.kMeans$cluster)))
+# We use the colors created in theline above to show us
+# where the groups are in the factor map, which is otherwise
+# created similarly to usual.
+baseMap.i.km <- createFactorMap(G, title = "RV map. k-means 3 groups", 
+                                col.points = col4Clusters$oc,
+                                col.labels = col4Clusters$oc,
+                                constraints = gg.rv.graph.out$constraints,
+                                alpha.points = .4)
+
+a06.aggMap.i.km <- baseMap.i.km$zeMap_background + 
+                   baseMap.i.km$zeMap_dots + 
+                   baseMap.i.km$zeMap_text + labels4RV
+a06.aggMap.i.km
+```
+
+## Analysis by beers
+
+Remember that a this analysis allows us to investigate not only how the raters were similar or different, (which may have been more interesting if we had more data on the participants) but also how similarly or differently those raters rated the beers.
+
+### Scree Plot
+
+The DiSTATIS function doesn't give us eigenvalues for the Splus matrix (the rows/observations), so to get our eigenvalues for this analysis, we run `eigen` on `Distatis.res$res4Splus$Splus`.  
+The eigenvalues for this are the eigenvalues of the compromise matrix. It looks like there is once again a single main dimension that we're really going to be interested in, but there is definitely a bit more variance extracted in the second, third, and fourth dimensions that may be worth analyzing. See [PCA](#PCA) for more on interpreting scree plots.  
+```{r echo = TRUE, out.width = '75%', fig.align = 'center'}
+comp.eigs <- eigen(Distatis.res$res4Splus$Splus)
+scree.S.out <- PlotScree(ev = comp.eigs$values, 
+                         title = "Compromise: Explained Variance per Dimension", 
+                         plotKaiser = T)
+```
+
+### Beer Bootstrapping
+
+Below are two functions for bootstrapping our beer data. These are specific to this analysis. Check out the documentation for more info on them. We're actually using the results from the first option in the next section. Because it's so quick, I've shown both options. The first function is very fast but only bootstraps from the factor scores, it doesn't calculate factor scores by bootstrapping the original distance cube, and therefore may be too liberal if the number of assessors is very large. Our data is only 51, so not that big, so it should be fine. The second function bootstraps the distance cube (in this case; check out [MFA](#MFA) for what a compromise matrix is) and computes factor scores from there. The results are more robust.
+
+```{r echo = TRUE}
+#  Option 1: bootstrap from factor scores, default is 1000 iterations
+BootF <- BootFactorScores(Distatis.res$res4Splus$PartialF)
+#
+# Option 2: Full bootstrap, default is also 1000 iterations
+F_fullBoot <- BootFromCompromise(DistanceCube) 
+```
+
+### Beer Factor Scores Plot
+
+There's a lot going on in the global factor scores plot below. This is the same as any of the other factor score plots in this book, so interpretation hasn't changed. However, what we need to understand about this is that these factor scores represent 'compromise' factor scores between all of the matrices created by recoding the original grouping data.  
+If you look at the RMD file, there's a graph with ellipses. Because we haven't used groups to group the beers, the ellipses aren't terribly informative. Instead of showing us bootstrapped group means, they show us approximations of where the individual observations group together. This doesn't really show us anything that isn't obvious in the original plot, and creates more distraction. The code is included regardless so that for future analyses, you can include groups and bootstrapping.  
+The plot below shows us the global factor scores of how the judges grouped the beers. There are two obvious groupings, an industrial group on the positive end of component 1, and a more crafted group on the negative end of component 1. There is also a spread of the industrial group loading positively to negatively corresponding to light vs. dark beers, respectively.  
+What it looks like is people tended to grouped beers in three groups: unfamiliar, familiar light, and familiar dark. On the right side we see the differentiation between light and dark, but on the left, we have APAs and imperial stouts grouped together, which suggests that the judges weren't sure what the beers actually were.  
+Guinness doesn't seem to fit into either of those groups, which shows that people weren't sure whether to put it with the 'craft' beers or the 'industrial' beers. 
+
+```{r, fig.width= 10, fig.height=10, fig.show="hold", out.height="50%", fig.align="center"}
+# General title for the compromise factor plots:
+genTitle4Compromise = 'Compromise Matrix Factor Scores Plot.'
+# This allows us to soft-code our axis numbers 
+# so we can change them easily later
+h_axis = 1
+v_axis = 2
+# Create color for the Products from prettyGraph
+color4Products <- prettyGraphsColorSelection(n.colors = 
+                                        nrow(Distatis.res$res4Splus$F))
+# To get the constraints for the graph, we need to use the bootstrapped
+# confidence intervals 
+cons.boot <- minmaxHelper4Brick(BootF[,c(1,2),])
+
+gg.compromise.graph.out <- createFactorMap(Distatis.res$res4Splus$F, 
+                                           axis1 = h_axis,
+                                           axis2 = v_axis,
+                                           title = genTitle4Compromise,
+                                           col.points = color4Products,
+                                           col.labels = color4Products, 
+                                           text.cex = 5, 
+                                           constraints = cons.boot
+                                           )
+# NB for the lines below You need DISTATIS version > 1.0.0
+# to get the eigen values and tau for the compromise
+label4S <- createxyLabels.gen(x_axis = h_axis, y_axis = v_axis, 
+                              lambda = comp.eigs$values,
+                              tau = Distatis.res$res4Cmat$tau,
+                              axisName = "Dimension ")
+b2.gg.Smap <- gg.compromise.graph.out$zeMap + label4S
+# Makes a factor plot of ellipses
+gg.boot.graph.out.elli <- MakeCIEllipses(data = BootF[,c(h_axis,v_axis),], 
+                          names.of.factors = c(paste0('Factor ',h_axis), 
+                                               paste0('Factor ',v_axis)),
+                                         col = color4Products)
+#Add ellipses to compromise graph
+b3.gg.map.elli <- gg.compromise.graph.out$zeMap + 
+                  gg.boot.graph.out.elli + label4S
+#
+b3.gg.map.elli
+```
+
+### Beer Tree
+
+The plot below shows us how the beers are grouped together. Because there is so much overlap in the factor scores plot, this actually serves as a great tool in determining how the beers were judged. We see clusters that may offer some insight into the thought process of the judges. 
+
+```{r echo = TRUE}
+nFac4Prod = 3
+D4Prod <- dist(Distatis.res$res4Splus$F[,1:nFac4Prod], method = "euclidean")
+fit4Prod <- hclust(D4Prod, method = "ward.D2")
+b3.tree4Product <- fviz_dend(fit4Prod, k = 1,
+                             k_colors = 'burlywood4',
+                             label_cols = color4Products[fit4Prod$order],
+                             cex = .5, xlab = 'Products',
+                             main = 'Cluster Analysis: Beers')
+b3.tree4Product
+```
+
+### K-means: Beers
+
+This plot does the same thing the k-means plot above does, but this time its for the beers, not the judges. We're using three centers. Notice that there are a few points that look they are in the wrong group: Guinness, for example, and Tempus Dor. this is likely because the grouping is grouping the variables using three dimensions, not just 2. 
+
+```{r fig.width= 12, fig.height=12, fig.show="hold", out.height="50%", fig.align="center"}
+beerF <- Distatis.res$res4Splus$F
+# First plain k-means
+set.seed(42)
+beers.kMeans <- kmeans(x = beerF, centers = 3)
+col4Clusters <- createColorVectorsByDesign(
+                    makeNominalData(as.data.frame(beers.kMeans$cluster) ))
+baseMap.j.km <- createFactorMap(beerF, title = "RV map. k-means 3 groups", 
+                                col.points = col4Clusters$oc,
+                                col.labels = col4Clusters$oc,
+                                constraints = b3.gg.map.elli$constraints,
+                                alpha.points = .4)
+a06.aggMap.j.km <- baseMap.j.km$zeMap_background + 
+                   baseMap.j.km$zeMap_dots + 
+                   baseMap.j.km$zeMap_text + label4S
+a06.aggMap.j.km
+```
+
+### Beer Partial Factor Scores Map
+
+This plot adds the partial factor scores of the groups of judges to the global factor scores map. It shows us how the groups of judges differed in how they rated the beers, and may give us an idea of how the groups trended in terms of grouping beers that they may or may not have been familiar with. A couple of points that highlight this difference are Heineken and Pacifico, and the grouping of Negra Modelo, Noche Buena, and Bohemia Oscuro. Judges who preferred craft beers were more likely to rank Heineken and Pacifico as lighter, and closer to the grouping of Sol, Modelo, Corona, and Tecate, whereas the industrial beer drinkers were more likely to create a separation between those two groups. For the trio of darker lagers, we see a similar pattern. The industrial beer drinkers were more likely to group the three darker beers closer to the X axis, perhaps grouping them with Leon, Bohemia, and Victoria. This suggests that they were focusing on the brand of the beer, rather than the content. On the other hand, the craft beer drinkers seem to create a separation between the Bohemia and Bohemia Oscura, suggesting that they're focusing on the actual style or content of the beer.    
+
+```{r, echo = TRUE, fig.width= 12, fig.height=12, out.height="50%", fig.align="center"}
+# get the partial map
+map4PFS <- createPartialFactorScoresMap(factorScores = Distatis.res$res4Splus$F,
+                                        partialFactorScores = F_k,
+                                        axis1 = 1, axis2 = 2,
+                                        colors4Items = as.vector(color4Products),
+                                        names4Partial = dimnames(F_k)[[3]], #
+                                        font.labels = 'bold')
+# This gives us a factor map where the partial scores colored by the two levels
+# of the judge design variable 
+d1.partialFS.map.byblocks <- gg.compromise.graph.out$zeMap + 
+                             map4PFS$mapColByBlocks + label4S
+# This gives us a factor map where the partial scores are colored by the levels
+# of beers. The partial factor scores are the same, but that just means that the
+# partial scores and the lines are the same color as the beer dots. This isn't useful 
+# information. The plot created by the code above is more interpretable.
+d2.partialFS.map.byCategories <- gg.compromise.graph.out$zeMap + 
+                                 map4PFS$mapColByItems + label4S
+d1.partialFS.map.byblocks
+```
+
+### Contributions calculations
+
+The `distatis` function doesn't provide us with contributions from each of the judges or from each of the beers, so we have to calculate those ourselves. The code below does that. 
+
+```{r}
+## Compute Contributions for DiSTATIS
+FS <- Distatis.res$res4Splus$F
+PartialF <- Distatis.res$res4Splus$PartialF
+FBoot <- BootF
+RvFS <- Distatis.res$res4Cmat$G
+# for each observation using FS
+F2 <- FS**2 # ** is exponentiation, works for matrices instead of ^
+SF2 <- apply(F2,2,sum) # sum along 2nd dimension (columns)
+Ctrn <- t(t(F2)/SF2) # Divides the squared values by the sum of the columns
+Ctr <- Ctrn * sign(FS) # applies the signs removed by the exponentiation
+# For each participant using RvFS
+RvF2 <- RvFS**2 
+RvSF2 <- apply(RvF2,2,sum)
+RvCtrn <- t(t(RvF2)/RvSF2)
+RvCtr <- RvCtrn * sign(RvFS)
+```
+
+### Contributions Barplots
+
+The values we calculate using the above code is visualized below. It shows us which of the beers and which of the judges drive the dimensions that we've plotted, or that we're evaluating. The plots below show us that all of the contributions of the first dimension happen to be positive. Also there are just under half of the observations that contribute significantly to the dimension, and of those, 15/23 are industrial beer drinkers, so it looks like that group contributes more to the first dimension. For the second dimension, we see a similar thing, that the industrial beer drinkers represent 14/23 of the significant observations. This is interesting, in that it suggests that the industrial beer drinkers overall contribute more to the significant dimensions of the factor space.
+
+The contributions for the beers are similar in that very clearly see the first dimension represented as craft vs. industrial beers (or rather known vs. unknown beers), and in the second dimension the darkest and the lightest of the well known beers contribute almost all of the variance.
+
+The sample code below shows how we're getting the colors and also the contributions for the first dimension of the columns, which are the judges. See the rmd file for the rest of the code used to create the plot below. Note that 0 is hard-coded as the minimum of the y axis. That's because all of our contributions for the first dimension happen to be positive and avoids ggplot errors.
+
+```{r echo = TRUE}
+colfunc <- colorRampPalette(c("red","darkblue"))
+col4rows <- colfunc(NROW(Ctr))
+colconts1 <- PrettyBarPlot2(
+                          bootratio = RvCtr[,1], 
+                          threshold = 1 / NROW(RvCtr),
+                          font.size = 3,
+                          color4bar = color4Judges.list$oc, # we need hex code
+                          main = 'Component 1: Judge Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(RvCtr[,1]))
+                          )
+```
+
+```{r, fig.width= 12, fig.height=8}
+colconts2 <- PrettyBarPlot2(
+                          bootratio = RvCtr[,2], 
+                          threshold = 1 / NROW(RvCtr),
+                          font.size = 3,
+                          color4bar = color4Judges.list$oc, # we need hex code
+                          main = 'Component 2: Judge Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(1.2*min(RvCtr[,2]), 1.2*max(RvCtr[,2]))
+                          )
+rowconts1 <- PrettyBarPlot2(
+                          bootratio = Ctr[,1], 
+                          threshold = 1 / NROW(Ctr),
+                          font.size = 3,
+                          color4bar = col4rows, # we need hex code
+                          main = 'Component 1: Beer Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(1.2*min(Ctr[,1]), 1.2*max(Ctr[,1]))
+                          )
+rowconts2 <- PrettyBarPlot2(
+                          bootratio = Ctr[,2], 
+                          threshold = 1 / NROW(Ctr),
+                          font.size = 3,
+                          color4bar = col4rows, # we need hex code
+                          main = 'Component 2: Beer Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(1.2*min(Ctr[,2]), 1.2*max(Ctr[,2]))
+                          )
+grid.arrange(as.grob(colconts1), as.grob(colconts2), as.grob(rowconts1), as.grob(rowconts2),
+                        ncol=2, top = text_grob("Contribution barplots", size=14, face='bold'))
+```
+
+
+## Conclusions
+
+ *  **Component 1**  
+    + This primarily differentiates our data into the 'familiar' and 'unfamiliar' beers. It makes sense that even craft beer drinkers can't be familiar with *every* beer on the list. 
+    
+ * **Component 2**  
+    + This seems to differentiate the 'familiar' beers along a light/dark spectrum, with the light beers on the positive end and the dark beers on the negative. We don't see the same spread between the 'unfamiliar' beers, though. 
+    
+ * **Judges**
+    + Although there was a wide dispersion in how the judges rated the beers, it was largely not systematic in terms of beer drinking preference. This suggests that although people identify as craft or industrial beer differences, they may not be super aware of the entire variety of beers on the market.
+ * **Beers**
+    + Where as there was a clear distinction in terms of the 'familiar' beers, there was no clear distinction in terms of the 'unfamiliar' beers. This suggests that the raters were likely to simply group the beers together by appearance of the label or something like that, if they didn't clearly know what the beer was or what it tasted like. And there were enough beers that were unfamiliar that this was the primary systematic distinction between the beers.   
+
+ * **Interpretation**: Although there was a separation between the means of the judges groups, it looks like there was a systematic difference only in how they rated the industrial beers. Also it looks like overall, there is a massive lack of familiarity with the craft beers presented in this experiment. I would also be interested in seeing how the judgings were made, i.e. whether they were sorted by picture or by taste. My guess is that they were sorted by image only, because that's the only way the craft beer cluster makes sense. There are pale ales and stouts all grouped together,   

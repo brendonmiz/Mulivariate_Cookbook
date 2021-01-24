@@ -1,0 +1,655 @@
+# Multiple Correspondence Analysis {#MCA}
+
+```{r include=FALSE}
+
+rm(list = ls())
+library(devtools)
+library(ExPosition)
+library(corrplot)
+library(ggrepel)
+library(tidyverse) #includes ggplot2, tibble, tidyr, rear, purrr, dplyr, stringr, forcats
+library(gridExtra)
+library(grid)
+library(ggplotify)
+library(kableExtra)
+library(knitr)
+library(gplots)
+suppressMessages(library(factoextra))
+suppressMessages(library(ggpubr))
+suppressMessages(library(data4PCCAR) )
+suppressMessages(library(PTCA4CATA))
+library(wesanderson)
+library(plyr)
+library(pander)
+```
+
+## Intro to MCA
+
+MCA is effectively an extension of what we saw in [CA](#CA), and allows us to decompose some of the relationships between categorical or nominal variables, or binned quantitative variables. Like the CA, we'll need something similar to a contingency table. In the analysis below, R treats each level of our variables as a single variable. Obviously with 1000 possible values for each variable, this would make our dataset and its analysis prohibitively large (possibly as large as 1000 x 28000). Instead, we'll bin the variables and run the MCA on an indicator matrix. An indicator matrix is a complete disjunctly coded matrix with observations being represented by one and only one '1' for any level of a variable. There's more on that later, in section titled [Binning and the Complete Disjunct Table][Binning and the Complete Disjunct Table]. While the overall output with regard to factor scores for the variables, look similar to CA (and therefore PCA), it's necessary to make some adjustments in our interpretation. For more on Multiple Correspondence, see: @Abdi2018a. For more on [Correspondence Analysis](#CA), see @Abdi2010d and @Abdi2018b. 
+
+### Strengths & Weaknesses
+**Strengths**  
+  - Great for breaking down variables into bins, so if you have data or factor plots from a [PCA](#PCA) that are non-linear, you can see how the various levels of the variables load onto the factor space.  
+  - Pre-processing (histograms, etc.) force you to take a close look at your data.  
+  - It's great to be able to see which variables are loading on which dimensions, which ones are not, and why.  
+
+**Weaknesses**  
+  - The histograms are helpful, but they take some time to interpret individually.  
+  - The visually complicated plots can be difficult to pull apart for interpretation.
+
+### Dos and Don'ts
+
+**Do:**  
+  - Once you've got the variables and their loadings, check out which variables load on which dimension. If you have to, pull sets of variables out and plot them individually. See which variables are measuring similar things, and which are not.  
+  - Make sure that if you apply a correction (Greenacre or Benzécri ), you apply it to both the regular MCA and the inferences for the MCA. If you don't, it won't spit an error, but you won't have the correct eigenvalues or percentage of variance extracted.  
+**Don't:**    
+  - Get bogged down in information overload when interpreting the variables. There are number of tools that allow us to interpret these, so use the histograms for initial overview, look for things that stand out, but come back once the disjunct factor maps are plotted to see if there's more information that can be gleaned from them.
+
+**Research Questions**  
+Questions for this analysis should be guided by the fact that we are are looking at levels of variables relative to our observations.  
+  - How do different levels of variables combine to create the group means?  
+  - How do different levels of variables separate the group means along the two principal axes?  
+  - What combinations of variables and their levels combine to create a typical observation from a certain group?  
+
+## Data
+
+We're using the music features dataset for this analysis. As stated above, we'll need an indicator matrix to run the MCA on, which means we'll need to do some editing of our data to make it work. Below is our original data. The rows show observations of one audio file each from each of six of the ten genres used in this data set. The columns show 10 of the 28 variables. For more on what each of these are, check out the explanations in the previous pages of the cookbook.
+
+###  Data Table
+```{r, echo = FALSE}
+
+mfdata <- read.csv("data.csv", header = TRUE)
+rownames(mfdata) <- mfdata[,1]
+mfdata <- mfdata[,c(2:30)]
+colnames(mfdata) <- c("bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl")
+
+music.genre <- mfdata$lbl
+mfmat <- as.matrix(mfdata[,1:28]) #removes "genre" from table
+mfdata <- mfdata[,1:28]
+
+mftable <- kable(mfdata[c(1,101,201,301,401,501), c(1:10)],
+                format = "latex", booktabs = TRUE) %>%
+                #kableExtra::landscape() %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+mftable
+```
+
+
+```{r, include = FALSE}
+resPCA <- epPCA(DATA = mfdata,
+                scale = 'SS1', # Make to use 'SS1' rather than TRUE
+                DESIGN = music.genre,
+                graphs =  FALSE # TRUE first pass only
+)
+# Note: RMarkdown won't produce the graphs during a knit.
+# Having graphs = TRUE will prevent the document from knitting. 
+# To get the graphs provided by the analysis, run the function "epPCA" as it appears above, in the console
+# Simply calling the assigned object will give you the results, but no graphs.
+```
+
+### Data Preparation
+
+```{r, echo = FALSE}
+# We don't need colors yet, but the code below will help us out later. 
+# `cfv` stands for color for variables and `cfb` stands for color for bootstraps. 
+# You'll see why `cfb` is basically four of `cfv` later.
+
+cfv <- unique(c(wes_palettes$BottleRocket2, wes_palettes$Rushmore1, 
+                wes_palettes$Royal2, wes_palettes$Zissou1, 
+                wes_palettes$Darjeeling1, wes_palettes$Darjeeling2[2:4]))
+
+cfb <- matrix(nrow = 28, ncol = 4)
+cfb[,1:4] <- as.matrix(cfv)
+```
+
+We have a number of steps to prepare before we can actually run the analysis. Because an MCA evaluates a table of disjuctively coded data, we need to take a couple of steps to make sure the data is prepared to run the MCA. We do the following:
+
+ 1. Evaluation
+ 2. Binning
+ 3. Spearman Rank testing
+ 4. Nominalizing
+ 
+At the end of this, you should end up with a dataset with the same number of rows, but more columns, because of the binning and nominalizing. If you're lucky enough to be able to use the same number of bins for each variable, it'll be the number of bins times the number of variables. For this dataset, that would be 4 (the default for the function we use below) times 28, or 112 columns.
+
+#### Evaluation
+
+First thing we do before we bin is check out our data a little more closely, looking at range, mins and maxes, and distribution of our data. We're looking for anything out of the ordinary that would make us want to bin our data in a special way. One effective way we can visualize our data is to check out histograms of each of the variables.
+
+`summary()` below shows us a summary of the data, and `str()` shows us the structure. The histograms below show us how each of the variables is distributed. The code we use to create each histogram is `h1  <- ggplot(data = mfdata, aes(x = bpm)) +  geom_histogram(bins = 30) + geom_vline(xintercept = quantile(mfdata$bpm)[2:4])`, where mfdata is our data and bpm is the variable we're drawing a histogram for. The majority of the variables look like they have an approximately normal distribution, but you should always check to see if any look like they might have a bimodal distribution or some kurtosis or skewness.If you have a variable that has a different kind of distribution, like a Poisson distribution or a lomax distribution, you may need to do some extra pre-processing before binning or analysis. In the example we have here, the zcr variable looks slightly skewed towards the left, which suggests that the majority of the audio files contain large amounts of percussion, which makes sense given our genres. It also makes sense given our factor map, which shows that ZCR is negatively correlated with the Classical genre, which may be more likely to contain only string, brass, or woodwind instruments, and positively correlated with Metal and Hip-Hop, which tend to feature percussive sounds more prominently and consistently.
+
+**Reading this Plot**  
+The histograms below all show the distributions of the data. The x-axis shows the values and the y-axis shows us the frequency of occurrence of any of those values. The vertical lines represent the quartiles of the distribution, with the center line representing the mean. The code listed above `quantile(mfdata$bpm)[2:4]` omits the first and fifth quantile, the minimum and maximum, from plotting. The MFCC values on the x-axes of these histograms does not represent frequency values in Hz, but relative power in that frequency bin (see more [here](#MFCCs)). The rest of the values are raw values for their units (Bandwidth, for example, is in Hz, and bpm is beats per minute).
+
+```{r echo = TRUE}
+# Sample code used to create the histograms
+h1  <- ggplot(data = mfdata, aes(x = bpm)) +  
+              geom_histogram(bins = 30, fill = cfv[1]) + 
+              geom_vline(xintercept = quantile(mfdata$bpm)[2:4])
+```
+
+```{r, echo = FALSE, fig.width = 14, fig.height = 9}
+#Get summary (summary) and structure (str) of data
+
+#mfsummary <- summary(mfdata)
+#mfstruct  <- str(mfdata)
+
+#visualize histograms of each column using hist()
+
+
+h2  <- ggplot(data = mfdata, aes(x = b)) +  geom_histogram(bins = 30, fill = cfv[2]) + geom_vline(xintercept = quantile(mfdata$b)[2:4])
+h3  <- ggplot(data = mfdata, aes(x = ch)) +  geom_histogram(bins = 30, fill = cfv[3]) + geom_vline(xintercept = quantile(mfdata$ch)[2:4])
+h4  <- ggplot(data = mfdata, aes(x = rmse)) +  geom_histogram(bins = 30, fill = cfv[4]) + geom_vline(xintercept = quantile(mfdata$rmse)[2:4])
+h5  <- ggplot(data = mfdata, aes(x = spec_c)) +  geom_histogram(bins = 30, fill = cfv[5]) + geom_vline(xintercept = quantile(mfdata$spec_c)[2:4])
+h6  <- ggplot(data = mfdata, aes(x = spec_b)) +  geom_histogram(bins = 30, fill = cfv[6]) + geom_vline(xintercept = quantile(mfdata$spec_b)[2:4])
+h7  <- ggplot(data = mfdata, aes(x = r_o)) +  geom_histogram(bins = 30, fill = cfv[7]) + geom_vline(xintercept = quantile(mfdata$r_o)[2:4])
+h8  <- ggplot(data = mfdata, aes(x = zcr)) +  geom_histogram(bins = 30, fill = cfv[8]) + geom_vline(xintercept = quantile(mfdata$zcr)[2:4])
+h9  <- ggplot(data = mfdata, aes(x = mfcc1)) +  geom_histogram(bins = 30, fill = cfv[9]) + geom_vline(xintercept = quantile(mfdata$mfcc1)[2:4])
+h10 <- ggplot(data = mfdata, aes(x = mfcc2)) +  geom_histogram(bins = 30, fill = cfv[10]) + geom_vline(xintercept = quantile(mfdata$mfcc2)[2:4])
+h11 <- ggplot(data = mfdata, aes(x = `3`)) +  geom_histogram(bins = 30, fill = cfv[11]) + geom_vline(xintercept = quantile(mfdata$`3`)[2:4])
+h12 <- ggplot(data = mfdata, aes(x = `4`)) +  geom_histogram(bins = 30, fill = cfv[12]) + geom_vline(xintercept = quantile(mfdata$`4`)[2:4])
+h13 <- ggplot(data = mfdata, aes(x = `5`)) +  geom_histogram(bins = 30, fill = cfv[13]) + geom_vline(xintercept = quantile(mfdata$`5`)[2:4])
+h14 <- ggplot(data = mfdata, aes(x = `6`)) +  geom_histogram(bins = 30, fill = cfv[14]) + geom_vline(xintercept = quantile(mfdata$`6`)[2:4])
+h15 <- ggplot(data = mfdata, aes(x = `7`)) +  geom_histogram(bins = 30, fill = cfv[15]) + geom_vline(xintercept = quantile(mfdata$`7`)[2:4])
+h16 <- ggplot(data = mfdata, aes(x = `8`)) +  geom_histogram(bins = 30, fill = cfv[16]) + geom_vline(xintercept = quantile(mfdata$`8`)[2:4])
+h17 <- ggplot(data = mfdata, aes(x = `9`)) +  geom_histogram(bins = 30, fill = cfv[17]) + geom_vline(xintercept = quantile(mfdata$`9`)[2:4])
+h18 <- ggplot(data = mfdata, aes(x = `10`)) +  geom_histogram(bins = 30, fill = cfv[18]) + geom_vline(xintercept = quantile(mfdata$`10`)[2:4])
+h19 <- ggplot(data = mfdata, aes(x = `11`)) +  geom_histogram(bins = 30, fill = cfv[19]) + geom_vline(xintercept = quantile(mfdata$`11`)[2:4])
+h20 <- ggplot(data = mfdata, aes(x = `12`)) +  geom_histogram(bins = 30, fill = cfv[20]) + geom_vline(xintercept = quantile(mfdata$`12`)[2:4])
+h21 <- ggplot(data = mfdata, aes(x = `13`)) +  geom_histogram(bins = 30, fill = cfv[21]) + geom_vline(xintercept = quantile(mfdata$`13`)[2:4])
+h22 <- ggplot(data = mfdata, aes(x = `14`)) +  geom_histogram(bins = 30, fill = cfv[22]) + geom_vline(xintercept = quantile(mfdata$`14`)[2:4])
+h23 <- ggplot(data = mfdata, aes(x = `15`)) +  geom_histogram(bins = 30, fill = cfv[23]) + geom_vline(xintercept = quantile(mfdata$`15`)[2:4])
+h24 <- ggplot(data = mfdata, aes(x = `16`)) +  geom_histogram(bins = 30, fill = cfv[24]) + geom_vline(xintercept = quantile(mfdata$`16`)[2:4])
+h25 <- ggplot(data = mfdata, aes(x = `17`)) +  geom_histogram(bins = 30, fill = cfv[25]) + geom_vline(xintercept = quantile(mfdata$`17`)[2:4])
+h26 <- ggplot(data = mfdata, aes(x = `18`)) +  geom_histogram(bins = 30, fill = cfv[26]) + geom_vline(xintercept = quantile(mfdata$`18`)[2:4])
+h27 <- ggplot(data = mfdata, aes(x = `19`)) +  geom_histogram(bins = 30, fill = cfv[27]) + geom_vline(xintercept = quantile(mfdata$`19`)[2:4])
+h28 <- ggplot(data = mfdata, aes(x = `20`)) +  geom_histogram(bins = 30, fill = cfv[28]) + geom_vline(xintercept = quantile(mfdata$`20`)[2:4])
+
+histarrange <- grid.arrange(h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, h15, h16, h17, h18, h19, h20, h21, h22, h23, h24, h25, h26, h27, h28, 
+             ncol = 7, nrow = 4, 
+             top = text_grob("Histograms Showing Data Distribution for Music Features Variables"))
+
+
+```
+
+#### Binning and the Complete Disjunct Table
+Because of the size of the dataset (1000 observations), I don't really see anything that makes me think I should specify any specific binnings for these data, so we're going to go with the default for `BinQuant()` (from the data4PCCAR package), which is four.
+
+First thing I'm going to do is create a dataframe to put our binned variables in. Then I'm going to run a for loop binning the variables, and then another loop over those data using the Spearman Rank Correlation to test how well they correlate with the original data. The function we use for the Spearman rank correlation is `cor(x, y, method = "spearman")`. This correlation is only helpful when the variable is linear. If there's a nonlinear relationship, the Spearman rank correlation isn't a helpful piece of information. That's why it's important to look at the histograms.
+
+Finally, I'm going to take the bins and make them nominal. This creates as many variables as there are levels of all the variables. For this dataset, I used four bins for each variable, so I ended up with four variables for each original variable (e.g. bpm.1, bpm.2, bpm.3, bpm.4). As stated in the introduction, each observation (audio file/song) has one and only one '1' for each of the original variables, corresponding to the bin (quartile) in which the value for that observation fell. 
+
+```{r, echo = FALSE}
+#create new dataframe to move data into and a one to move the sample sizes into
+
+mfbin <- data.frame(matrix(nrow = 1000, ncol = 28))
+row.names(mfbin) <- row.names(mfdata)
+colnames(mfbin) <- colnames(mfdata)
+
+
+ntab <- data.frame(matrix(nrow = 28, ncol = 5))
+rownames(ntab) <- colnames(mfdata)
+colnames(ntab) <- c("Bin 1", "Bin 2", "Bin 3", "Bin 4", "Spearman")
+
+#For loop to bin data and assign to columns in new matrix
+
+for (i in 1:28){
+  mfbin[,i] <- BinQuant(mfdata[,i], stem = '')
+  ntab[i,1:4] <- table(mfbin[,i])  
+  }
+
+# Used this next lines a test to make sure that the data were being binned accurately
+#rmsetest <- BinQuant(mfdata$rmse, stem = '')
+
+# Test how well the new data set correlates with the original dataset. 
+# Add the Spearman correlations to the column of the matrix that was not used by the loop above
+
+for (i in 1:28){ntab[i,5] <- cor(as.numeric(mfdata[,i]), as.numeric(mfbin[,i]), method = "spearman")}
+
+#Make data nominal - disjuctly coded 1s and 0s for MCA 
+
+mfnom <- makeNominalData(mfbin)
+
+```
+
+
+## Distributions Table
+
+The table we get from the output below shows us what the ranges of each of the bins are, how many of each variable are binned in each bin, and how accurately these bins align with the original data. Below are the first 5 variables. In a perfect world, we'd see 250 observations in each variable, which we very nearly do. Things won't always be this neat.
+
+```{r, echo = FALSE}
+
+distmat <- data.frame(matrix(nrow = 5, ncol = 28))
+colnames(distmat) <- colnames(mfdata)
+row.names(distmat) <- c("Minimum", "Cutpoint 1", "Cutpoint 2",  "Cutpoint 3", 'Maximum')
+
+for (i in 1:28){distmat[1:5, i] <- quantile(mfdata[,i])}
+
+distmat <- rbind(distmat, t(ntab))
+
+distable <- kable(distmat[ ,1:6],
+                format = "latex", booktabs = TRUE) %>%
+                #kableExtra::landscape() %>%
+                kable_styling(latex_options = "striped", full_width = FALSE)
+
+distable
+
+```
+
+
+**Bin Correlation Heatmap**
+
+The heatmap below shows us the what our data looks like post-binning. There are some pretty clear distinctions between genres and between spectral markers, although some of the spectral markers do seem to be moving in blocks. There are clear differences between the 600 and 700 groups, which are the rows of metal and pop. Likewise, MFCCs are very clearly alternating high and low values by odds and evens. 
+\newpage
+For reference, the genre labels and the numbers corresponding to those values are listed below:
+  
+| Genre    | Numbers | Genre    | Numbers | Genre    | Numbers | Genre    | Numbers |
+|----------|---------|----------|---------|----------|---------|----------|---------|
+| blues    | 1-100   | disco    | 301-400 | metal    | 601-700 | rock     | 901-1000|
+| classical| 101-200 | hip hop  | 401-500 | pop      | 701-800 |
+| country  | 201-300 | jazz     | 501-600 | reggae   | 801-900 |
+
+```{r, echo = FALSE, fig.show = 'hold', fig.height = 6}
+lmat = rbind(c(0,3,0),c(2,1,0),c(0,4,0))
+lwid = c(.5,3,.5)
+lhei = c(1,4,1.5)
+mfbin4heatmap <- lapply(mfbin, as.numeric)
+mfbinheatmap <- heatmap.2(as.matrix(data.frame(mfbin4heatmap)), 
+                          dendrogram = 'none', trace = "none", 
+                          Rowv = F, Colv = F, 
+                          lmat = lmat, lhei = lhei, lwid = lwid,
+                          main = "Bin Correlation Heatmap")
+
+```
+
+### Phi2 squared & Burt Table
+The next step for an MCA is to compute a Burt table, which is computed by multiplying our nominal (complete disjunct) table by its transpose to get a contingency table. For this we use the function `phi2mat4BurtTable` from the `data4PCCAR` package. The function gives us two outputs: the phi^2^ matrix and the Burt table. The Burt table is a contingency table for all of our nominalized variables, and the phi^2^ table shows us the squared correlation between the variables. We can then visualize this using a correlation plot. The correlation plot below is the phi^2^ correlation.
+
+```{r, fig.show = 'hold'}
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+# Pseudo Heat Map ----
+corrMatBurt.list <- phi2Mat4BurtTable(mfnom, make_data_nominal = FALSE)
+corr4MCA <- corrplot.mixed(as.matrix(corrMatBurt.list$phi2.mat),
+                           lower.col = "black",
+                           title = "Phi2: (squared) Correlation Map for MCA",
+                           tl.cex = .3, 
+                           addCoefasPercent = TRUE, 
+                           number.cex = .5, ) + 
+                           theme(plot.title = element_text(family = 'sans', size = 18, 
+                                 margin = margin(30,0,0,0)))
+                           
+#_____________________________________________________________________
+# Pseudo Heat Map. Correlation ----
+# We need correlation to compare with PCA
+# Where the plot created by the code above is the squared correlations, the plot created here is simply phi, not phi^2, and thus represents the correlation, not the squared correlation. This is not necessary for the MCA per se, but it allows us to more easily compare the results from here to our PCA.
+#corr4MCA.r <- corrplot.mixed(as.matrix(corrMatBurt.list$phi2.mat^(1/2)),# to get correlations
+#                             title = "Phi: Correlation Map for MCA", 
+#                       addCoefasPercent = TRUE,
+#                       lower.col = "black",# Add coefficient of correlation
+#                       tl.cex = .5,#Text label color and rotation
+#                       number.cex = .5,
+                       # needed to have the color of variables correct
+#                       )
+```
+
+## Analysis
+
+The code below shows us the MCA and the MCA inference batteries, respectively.
+
+```{r, echo = TRUE}
+mfMCA <- epMCA(mfnom, make_data_nominal = FALSE, 
+               DESIGN = music.genre, 
+               graphs = FALSE, correction = "bg"
+               )
+```
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE}
+mfMCA.inf <- epMCA.inference.battery(DATA = mfnom, 
+                                     make_data_nominal = FALSE,
+                                DESIGN = music.genre, 
+                                make_design_nominal = TRUE,
+                                graphs =  FALSE, # TRUE first pass only
+                                correction = "bg"
+                                )
+```
+
+## Results
+
+### Scree Plot
+
+The scree plot shows us which of the eigenvalues/dimensions of variance extracted are significant. The dimensionality of this analysis is so much higher than the previous one because we have artificially inflated the number of variables, and therefore the dimensionality of the analysis, by binning. We therefore need to make a correction regarding the eigenvalues [@Abdi2018a]. There are two possible corrections, that of Benzécri and that of Greenacre, which can be specified in the `epMCA` function. @Abdi2018a suggests that Greenacre (1993) is a slightly better correction, and we've used that here.  
+
+Here we have 15 significant dimensions out of a possible 26. The Kaiser criterion shows us that the average value for the eigenvalues is approximately 6, and that we have multiple significant dimensions below that. See [PCA](#PCA) or [CA](#CA) for more on interpreting scree plots. As always, remember that significant doesn't necessarily mean important.  
+
+```{r echo = TRUE}
+PlotScree(ev = mfMCA$ExPosition.Data$eigs, 
+          p.ev = mfMCA.inf$Inference.Data$components$p.vals, 
+          plotKaiser = TRUE,
+          )
+a001a.screePlot <- recordPlot()
+```
+
+#### Permutation Testing
+
+As you can see below, the first two eigenvalues was tested against the permutations. All are significant in that it is unlikely that they arise by chance. Remember that the first value is an omnibus test to tell us whether or not there's something in the data. The histogram of the distribution of the permuted eigenvalues is difficult to see because it's stacked up right along the significance line. Zooming in makes it possible to see. See [PCA](#PCA) for more on interpreting these histograms.
+
+```{r, out.width = "48%", fig.show='hold', ncols = 2}
+zeDim = 1
+pH1I <- prettyHist( 
+           distribution = mfMCA.inf$Inference.Data$components$eigs.perm[,zeDim],
+           observed = mfMCA.inf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, .55), # needs to be set by hand
+           breaks = 3,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE,
+           cutoffs = c( 0.975))
+
+zeDim = 2
+pH1I <- prettyHist(
+           distribution = mfMCA.inf$Inference.Data$components$eigs.perm[,zeDim],
+           observed = mfMCA.inf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, .4), # needs to be set by hand
+           breaks = 3,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE,
+           cutoffs = c( 0.975))
+
+
+```
+
+
+
+### Factor Maps
+
+Next we need to visualize all of our data on the principal components space. The first thing we're going to do is visualize all of our observations, including their means and confidence intervals for their means as we have done before. This will help us to understand how the observations map onto the variables and what patterns we can discern from that. If you've seen the cookbooks on [PCA](#PCA), [Inference PCA](#InfPCA), and [CA](#CA), this should look familiar. 
+
+You may notice that these plots are flipped across the center. In PCA, we saw Metal on the right and Pop and Classical on the left, but here they've reversed. That's largely an artifact of coincidence. Running the same analyses on different computers, different operating systems, etc., will often give flipped results.^[More important than the specific factor or loading directions is how they relate to one another. For example, regardless of the direction in which a given variable loads, as long we see the variables consistently loading with the same variables and against the same variables, we're getting consistent results.]  
+
+```{r, echo = TRUE}
+# I-set map ----
+# a graph of the observations
+mf.Imap <- PTCA4CATA::createFactorMap(
+  title = 'MCA: Music Features Data Set',
+  mfMCA$ExPosition.Data$fi,
+  col.points = mfMCA$Plotting.Data$fi.col,
+  display.labels = FALSE,
+  alpha.points = .2
+)
+# Labels
+label4Map <- createxyLabels.gen(1,2,
+                    lambda = mfMCA$ExPosition.Data$eigs,
+                    tau = mfMCA$ExPosition.Data$t)
+# Put it together
+a002.Map.I <- mf.Imap$zeMap + label4Map
+```
+
+```{r, echo = FALSE}
+# This chunk 
+
+fg <- cbind(mfMCA$ExPosition.Data$fi[ ,1:2], music.genre)
+colnames(fg) <- c("f1", "f2", "genre")
+genres <- c(levels(music.genre))
+fg <- data.frame(fg)
+fgsummary <- ddply(fg, "genre", summarise, mean1 = mean(f1), mean2 = mean(f2))
+rownames(fgsummary) <- genres
+
+fi.plot.redux <- createFactorMap(fgsummary,
+                                 title = "Music Data Genre factor scores",
+                                 axis1 = 2, axis2 = 3,  #using columns 2 and 3 b
+                                 pch = 17,
+                                 cex = 4,
+                                 text.cs = 2.5,
+                                 col.points = unique(mfMCA$Plotting.Data$fi.col),
+                                 alpha.points = 1,
+                                 )
+
+fi.boot <- Boot4Mean(mfMCA$ExPosition.Data$fi,
+                     design = music.genre,
+                     niter = 1000)
+
+bootCI4mean <- MakeCIEllipses(fi.boot$BootCube[,c(1:2),], # get the first two components
+                              col = unique(mfMCA$Plotting.Data$fi.col)
+                              )
+
+                              
+fb.plot <- mf.Imap$zeMap + label4Map + fi.plot.redux$zeMap_dots + fi.plot.redux$zeMap_text + bootCI4mean                            
+
+fb.plot
+                              
+```
+
+### Disjunct Factor Maps
+**Reading this Plot**  
+These factor maps show us how the observations map onto the factor space. Because we're using disjunctively coded data, we can also see what levels of those variables map onto which areas of the factor space. There are four maps below, each of which show certain variables. The first map shows all of the variables, the second shows just the variables that load significantly on the first dimension, the third shows the variables that load significantly on the second dimension, and the fourth shows the variables that don't load significantly on either one of those variables. I did this by specifying which of the rows of `mfMCA$ExPosition.Data$fj` I wanted to display on each graph. I selected them after looking at the contribution plots (below) to see which variables contributed what to which dimensions. I've set the constraints (mins and maxes for the axes) on all of them to be the same, so the scale is the same, and it's easier to see how much they're loading relative to one another.  
+Note that the first dimension is made up entirely of the MFCCs, which makes sense because of the structure of the measurement and the fact that they're basically measuring the same thing. The second dimension is driven by the other named spectral components and MFCCs 1 and 2, which means that they're measuring something different to the other MFCCs. The fourth plot, the non-significant variables, consists of beats, beats per minute, and the last few MFCCs. Interestingly, none of these variables are plotting in a linear fashion on these factor maps, and comparing the disjunct factor maps to the observation factor plot shows us similar results to what we would expect to see given the heatmap we saw above. As an example, MFCC 2 loads such that the lowest values of the variable correspond with the placement of the pop genre on the observation factor plot, and likewise the highest values load along with the classical genre.  
+```{r echo = FALSE}
+col4Var <- c('orange','orange4','red','red4')
+# Levels
+col4Levels <-  coloringLevels(rownames(mfMCA$ExPosition.Data$fj), 
+                                       col4Var)   
+#_____________________________________________________________________
+ axis1 = 1
+ axis2 = 2
+ # to save typing
+ Fj.all <- mfMCA$ExPosition.Data$fj
+ # Remember the FJ are the factor scores for the variables, so as we're plotting these, we're plotting all four of the bins we created for each variable
+ # Because we've basically quadrupled the number of columns we are using, we have to pick out which ones are going to be plotted on the next section. 
+ # There's probably a way to soft code this more than what I've done here, but I haven't really tried to do that. We're basically making four separate factor maps below. One with all of the variables, one with just the variables that load on the first dimension/component (D1), one with just the variables that load on the second dimension/component (D2), and one showing the variables that don't load on either dimension.
+ FJ.1s <- c(45:92,97:100)
+ FJ.2s <- c(9:40)
+ FJ.3s <- c(1:8,41:44,93:96,101:112)
+ 
+ Fj.1 <- mfMCA$ExPosition.Data$fj[FJ.1s, ]
+ Fj.2 <- mfMCA$ExPosition.Data$fj[FJ.2s, ]
+ Fj.3 <- mfMCA$ExPosition.Data$fj[FJ.3s, ]
+ 
+```
+
+```{r echo = TRUE, fig.height = 8, out.height='50%', fig.align='center'}
+#The disjunct factor maps are created the same way the other factor maps are: 
+# First you make the base map using the FJs, 
+# the factor scores for the levels of binned variables
+BaseMap.Fj.all <- createFactorMap(X = Fj.all, axis1 = axis1, axis2 = axis2,
+                               title = 'MCA Variables', cex = 1,
+                               col.points = col4Levels$color4Levels,
+                               col.labels = col4Levels$color4Levels, 
+                               text.cex = 2.5, force = 2)
+# Assign the parts of the map, depending on what you want to display
+###### This one uses just the Fjs
+b001.BaseMap.Fj.all <- BaseMap.Fj.all$zeMap + label4Map 
+###### This one creates the maps using the group means also
+b002.BaseMapNoDot.Fj.all  <- BaseMap.Fj.all$zeMap_background +
+                             BaseMap.Fj.all$zeMap_text + label4Map + 
+                             fi.plot.redux$zeMap_dots + fi.plot.redux$zeMap_text
+# Then you create the lines that connect the levels of the binned variables
+lines4J.all <- addLines4MCA(Fj.all, col4Var = col4Var)
+# Then you put it all together
+b003.MapJ.allwm <-  b001.BaseMap.Fj.all + lines4J.all + fi.plot.redux$zeMap_dots
+b003.MapJ.all <-  b001.BaseMap.Fj.all + lines4J.all
+# This is just the first map. Check the .rmd file for the creation of the other
+# plots, as well as the grid.arrange line we use to put them all together.
+
+# The first plot is displayed here by itself and with all the other plots below.
+b003.MapJ.allwm
+```
+
+```{r, echo = FALSE, fig.height = 9, fig.width = 9, fig.show = 'hold'}
+# generate the other maps
+
+ BaseMap.Fj.1 <- createFactorMap(X = Fj.1 , # resMCA$ExPosition.Data$fj,
+                               axis1 = axis1, 
+                               axis2 = axis2,
+                               title = 'Variables loading on D1', 
+                               col.points = col4Levels$color4Levels[FJ.1s], 
+                               cex = 1,
+                               col.labels = col4Levels$color4Levels[FJ.1s], 
+                               text.cex = 2.5,
+                               force = 2, constraints = BaseMap.Fj.all$constraints)
+ 
+ BaseMap.Fj.2 <- createFactorMap(X = Fj.2 , # resMCA$ExPosition.Data$fj,
+                               axis1 = axis1, 
+                               axis2 = axis2,
+                               title = 'Variables loading on D2', 
+                               col.points = col4Levels$color4Levels[FJ.2s], 
+                               cex = 1,
+                               col.labels = col4Levels$color4Levels[FJ.2s], 
+                               text.cex = 2.5,
+                               force = 2, 
+                               constraints = BaseMap.Fj.all$constraints)
+  
+ BaseMap.Fj.3 <- createFactorMap(X = Fj.3 , # resMCA$ExPosition.Data$fj,
+                               axis1 = axis1, 
+                               axis2 = axis2,
+                               title = 'NS Variables', 
+                               col.points = col4Levels$color4Levels[FJ.3s], 
+                               cex = 1,
+                               col.labels = col4Levels$color4Levels[FJ.3s], 
+                               text.cex = 2.5,
+                               force = 2, constraints = BaseMap.Fj.all$constraints)
+ 
+#_____________________________________________________________________
+ # make the J-maps ----
+  
+ b001.BaseMap.Fj.1 <- BaseMap.Fj.1$zeMap + label4Map 
+ b002.BaseMapNoDot.Fj.1  <- BaseMap.Fj.1$zeMap_background +
+                                    BaseMap.Fj.1$zeMap_text + label4Map + fi.plot.redux$zeMap_dots + fi.plot.redux$zeMap_text
+ 
+ b001.BaseMap.Fj.2 <- BaseMap.Fj.2$zeMap + label4Map 
+ b002.BaseMapNoDot.Fj.2  <- BaseMap.Fj.2$zeMap_background +
+                                    BaseMap.Fj.2$zeMap_text + label4Map + fi.plot.redux$zeMap_dots + fi.plot.redux$zeMap_text
+ 
+ b001.BaseMap.Fj.3 <- BaseMap.Fj.3$zeMap + label4Map 
+ b002.BaseMapNoDot.Fj.3  <- BaseMap.Fj.3$zeMap_background +
+                                    BaseMap.Fj.3$zeMap_text + label4Map + fi.plot.redux$zeMap_dots + fi.plot.redux$zeMap_text
+ 
+ # add Lines ----
+ lines4J.1   <- addLines4MCA(Fj.1, col4Var = col4Var)
+ lines4J.2   <- addLines4MCA(Fj.2, col4Var = col4Var)
+ lines4J.3   <- addLines4MCA(Fj.3, col4Var = col4Var)
+ 
+
+ b003.MapJ.1wm <-  b001.BaseMap.Fj.1  + fi.plot.redux$zeMap_dots + lines4J.1
+ b003.MapJ.1  <-  b001.BaseMap.Fj.1 + lines4J.1
+ #fmap1 <- recordPlot()
+ 
+ b003.MapJ.2wm <-  b001.BaseMap.Fj.2  + fi.plot.redux$zeMap_dots + lines4J.2
+ b003.MapJ.2 <-  b001.BaseMap.Fj.2 + lines4J.2
+ #fmap2 <- recordPlot()
+ 
+ b003.MapJ.3wm <-  b001.BaseMap.Fj.3  + fi.plot.redux$zeMap_dots + lines4J.3 
+ b003.MapJ.3 <-  b001.BaseMap.Fj.3 + lines4J.3
+ #fmap3 <- recordPlot()
+ 
+
+ #b003.MapJ.all
+ #b003.MapJ.1
+ #b003.MapJ.2
+ #b003.MapJ.3
+ 
+ #b003.MapJ.allwm
+ #b003.MapJ.1wm
+ #b003.MapJ.2wm
+ #b003.MapJ.3wm
+```
+```{r echo = FALSE, fig.height = 9, fig.width = 9}
+
+ grid.arrange(
+    as.grob(b003.MapJ.allwm),as.grob(b003.MapJ.1wm),as.grob(b003.MapJ.2wm),as.grob(b003.MapJ.3wm),
+    ncol = 2,nrow = 2,
+    top = text_grob("Factor Plots with Binned Variables", size = 18, face = 'bold')
+  )
+ 
+
+```
+
+### Contributions
+**Reading this Plot**
+The plot below shows us contributions for each dimension, as well as the bootstrap ratios for each of the disjunctively coded variables. The contributions are showing us simply how much each variable loads, irrespective of the sign of that loading. This is because for this type of analysis, we already broke down how much each component loads and in what direction for what value with the binning and the disjunct factor plots we did above. We also see those loadings in the bootstrap ratios. The bootstrap ratios on top show us how much consistently each bin of each variable loads on each component, and in what direction. It's easy to see the differences between the spectral components and the MFCCs in this, with the MFCCs driving component 1 and spectral components loading on variable 2. You can also see if you look closely that most of the variables load in order - the first bin loads the most positively while the fourth bin loads most negatively (or vice versa) and the middle two bins fall somewhere in between. Sometimes they don't, which happens in the case where some variables load in a non-linear fashion. Beats and BPM are examples.  
+
+The code below creates the plots for the contributions and the bootstrap ratios. See the rmd file for how we arrange them on the page. The labels for each of the variables on the bottom plot are small, but visible if you zoom in. If you're looking at this on a webpage, open in a new tab and zoom in. If you're looking at a PDF, just zoom in.  
+```{r, echo = TRUE}
+mfcont <- ctr4Variables(mfMCA$ExPosition.Data$cj)
+mfcont.s <- ctr4Variables(mfMCA$ExPosition.Data$cj)*sign(mfMCA$ExPosition.Data$fj)
+# Here we plot contributions of columns for component 1
+varCtr1 <- mfcont[,1]
+names(varCtr1) <-rownames(mfcont)
+ctrJ.1 <- PrettyBarPlot2(varCtr1,
+                         ylim =c(0, 1.2*max(varCtr1)),
+                         ylab = 'Contributions',
+                         font.size = 4,
+                         threshold = 1/ nrow(mfcont),
+                         color4bar = cfv, 
+                         angle.text = 45
+                         )+ ggtitle("", subtitle = 'Dimension 1')
+# and for component 2
+varCtr2 <- mfcont[,2]
+names(varCtr2) <- rownames(mfcont)
+ctrJ.2 <- PrettyBarPlot2(varCtr2,
+                         threshold = 1 / NROW(varCtr2),
+                         font.size = 4,
+                         color4bar = cfv, # we need hex code
+                         ylab = 'Contributions',
+                         ylim = c(0, 1.2*max(varCtr2)),
+                         angle.text = 45,
+                         ) + ggtitle("", subtitle = 'Dimension 2')
+
+```
+
+```{r, echo = TRUE}
+BR.I <- mfMCA.inf$Inference.Data$fj.boots$tests$boot.ratios
+laDim = 1
+# Plot the bootstrap ratios for Dimension 1
+ba001.BR1 <- PrettyBarPlot2(BR.I[,laDim],
+                        threshold = 2,
+                        font.size = 1,
+                   color4bar = t(cfb), # we need hex code
+                  ylab = 'Bootstrap ratios', #sortValues = TRUE
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle(paste0('Component ', laDim), subtitle = 'Columns')
+# Plot the bootstrap ratios for Dimension 2
+laDim = 2
+ba002.BR2 <- PrettyBarPlot2(BR.I[,laDim],
+                        threshold = 2,
+                        font.size = 1,
+                   color4bar = t(cfb), # we need hex code
+                  ylab = 'Bootstrap ratios', #sortValues = TRUE
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle(paste0('Component ', laDim), subtitle = 'Columns')
+```
+
+```{r, echo = FALSE, fig.width=14, fig.height = 10}
+grid.arrange(
+    as.grob(ctrJ.1),as.grob(ctrJ.2),as.grob(ba001.BR1),as.grob(ba002.BR2),
+    ncol = 2,nrow = 2,
+    top = text_grob("Contributions and Bootstrap ratios", size = 18, face = "bold")
+  )
+```
+```{r, echo= FALSE} 
+# Save the graphics  ----
+#saving.pptx <-  saveGraph2pptx(file2Save.pptx = 'Class8-9_MCA', 
+#                               title = "The Iris Set as MCA" , 
+#                               addGraphNames = TRUE)
+```
+
+## Conclusions
+
+One thing that this does is it shows how the levels (bins) of each of the variables are reflected in each of the groups. To visualize this more effectively, we can look at the factor maps with the means of the groups plotted as well. 
+
+ *  **Component 1**  
+    +  This explains why the variables we saw before loaded the way they did: 
+    +  On the negative side, we have all of the variables driving the horizontal component, but on the positive side, the variables also seem to load a bit on the second component.
+    +  We can also see how the Odd MFCCs have lower values on the negative end of component 1 and higher values on the positive side, while even MFCCs have lower values on the positive side of component 1 and higher values on the positive end.
+    + This does really help separate which of the genres tend to load in which way on these spectral components.
+
+
+ * **Component 2**  
+    + Component two really helps separate out how music recording techniques differ between genres. 
+    + The highest values of: spectral centroid, roll off, and spectral bandwidth are all more associated with pop than any other genre. 
+    + Likewise, the lowest values for every single component is more highly associated with classical than any other genre.
+    + We can see how many genres cluster in the middle, suggesting that there aren't too many differences in their recording techniques.
+ * Interpretation: Acoustically recorded music has lower extreme spectral components than electronically produced music. This interpretation isn't new, and is the same as we saw for [PCA](#PCA), but offers the additional value of showing how the levels of the variables contribute to the placement of the observations in the factor space. This is similar to what we will see in [DiCA](#DiCA).  

@@ -1,0 +1,27 @@
+# Mel-Frequency Cepstral Coefficients {#MFCCs}
+
+Because it's important to understand the variables in order to understand the story the data are telling, I've included the discussion and links below to help guide our understanding of Mel-Frequency Cepstral Coefficients. 
+
+## What are they? 
+
+Essentially, Mel-Frequency Cepstral Coefficients (MFCCs) measure how well the audio we hear from a recording fits into certain spectral bins. They are a useful tool for detecting spoken words in audio files, and there have been other interesting uses for them that have been found recently. 
+
+## How do we get them?
+
+The majority of the information I've for the MFCCs comes from the [LibROSA documentation](https://librosa.github.io/librosa/generated/librosa.feature.mfcc.html) and a great online resource found [here](http://practicalcryptography.com/miscellaneous/machine-learning/guide-mel-frequency-cepstral-coefficients-mfccs/).
+
+According to the libROSA documentation, the output for the MFCC function is a vector of 20 values, each representing the discrete cosine transform (DCT) of the mel-frequency decomposition of the audio signal in a short time window of the audo file. The number of values depends on the number of triangular windows the decomposer elects to do. The default for the function in the libROSA documentation is 20. These windows are set over the spectrum domain, not the time domain, and allow you to analyze the power of the spectrum in a given mel-frequency bin. The mel-frequencies are a mathematical analogue for how we hear (effectively, the log of the frequency), so the mel-frequency bins help us to analyze the frequency in terms of what we hear, not just in terms of the signal. Now, because these triangular windows overlap with the windows adjacent, they need to be decorrelated using the DCT so that they're only capturing the information that's unique to the individual window. 
+
+**Steps to Calculating MFCCs**
+from Practical Cryptography's [MFCC Tutorial](http://practicalcryptography.com/miscellaneous/machine-learning/guide-mel-frequency-cepstral-coefficients-mfccs/)  
+
+ * First you divide the audio file into short time windows, each one between 20 - 40 ms. Too short (< 10 ms) and there isn't enough information present to get an accurate read on the spectral content of the window. Too long (> 40 ms), and there will be too much noise to accurately determine what the spectral data are for that window.
+ 
+ * After you divide the audio into the time windows, you run a spectral analysis, calculating the periodogram of the power spectrum  
+ 
+ * Apply the triangular mel filterbank and sum the energy in each filter, with the first filterbank at 0  
+ 
+ * Take the discrete cosine transform of the log of the filterbank energies  
+ 
+ * Once that's done, you're left with a vector of MFCCs for a given time slice of the audio file that represents the relative power of each mel-frequency spectral component in that slice. From there, the spectral power for each slice is averaged across the time domain, so that (for example) we get the average power for all of the MFCCs in the entire file. What this results in is a big picture idea of where the tonal energy is in the file. There is one value for each spectral window, hence 20 MFCCs.  
+

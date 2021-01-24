@@ -1,0 +1,51 @@
+# Factor Plots {#factorplots}
+
+This page goes into more detail about specifics in creating factor plots. We'll go step by step to see what options there are and how to best visualize different things.
+
+- Breakdown of factor plots
+- Breakdown of biplots
+- Breakdown of loadings plots
+- 
+
+
+
+
+```{r}
+# Because we have more data, we can plot the factor scores for the first dimension against the factor scores for the third dimension. This should be interpreted as rotating the plot 90 degrees around the first principal component axis, we're now effectively looking at the first factor scores plot from above.
+
+#mfpca.fi.plot2 <- createFactorMap(mfpca.res$ExPosition.Data$fi,# data  
+#                            title = "Music Data row factor scores (Dimensions 1 and 3)",  # title of the plot
+#                            axis1 = 1, axis2 = 3, # which component for x and y axes
+ #                           pch = 19, # the shape of the dots (google `pch`)
+ #                           cex = 2, # the size of the dots
+  #                          text.cex = 2.5, # the size of the text
+   #                         col.points = mfpca.res$Plotting.Data$fi.col, # color of the dots
+    #                        col.labels = mfpca.res$Plotting.Data$fi.col, # color for labels of dots
+     #                       display.labels = FALSE,
+      #                      alpha.points = .1
+       #                     )          
+
+# labels for plot for factors 2 and 3.
+#mfpca.fi.labels2 <- createxyLabels.gen(1,3,
+ #                            lambda = mfpca.res$ExPosition.Data$eigs,
+  #                           tau = round(mfpca.res$ExPosition.Data$t),
+   #                          axisName = "Component "
+    #                          )
+
+#create means plot for plot for dimensions 2 and 3
+#mfpca.fi.meansplot2 <- createFactorMap(mfpca.means,
+#                                  title = "Music Data Genre Factor Scores (Dimensions 2 and 3)",
+ #                                 axis1 = 1, axis2 = 3,
+  #                                pch = 17,
+   #                               cex = 4,
+    #                              text.cs = 2.5,
+     #                             col.points = unique(mfpca.res$Plotting.Data$fi.col),
+      #                            alpha.points = 1,
+       #                           )
+
+#fp03.pca <- mfpca.fi.plot2$zeMap + mfpca.fi.plot2$zeMap_dots + mfpca.fi.labels2 + mfpca.fi.meansplot2$zeMap_dots + mfpca.fi.meansplot2$zeMap_text
+
+#fp03.pca
+
+```
+

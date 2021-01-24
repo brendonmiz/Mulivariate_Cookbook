@@ -1,0 +1,8 @@
+book_filename: "Mizener-Cookbook"
+delete_merged_file: true
+language:
+  ui:
+    chapter_name: "Chapter "
+rmd_files: ["index.rmd", "01-Cookbookintro.rmd", "02-SVDGSVD.Rmd", "03-PCAMizMF.rmd", "04-INFPCAMizMF.Rmd", "05-CAMizVowelcolor.Rmd",
+            "06-MCAMizMF.Rmd", "07-BADAMizMF.rmd", "08-DiCAMizMF.Rmd", "11-PLSCMizMF.RMD", "09-DistatisMizBeer.Rmd", "10-MFAMizMF.rmd", 
+            "13-Bibliography.Rmd", "15-AppendixMFCCS.Rmd"]

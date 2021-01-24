@@ -1,0 +1,123 @@
+# What's in this book? {#what}
+## Quick lookup for techniques by data type
+**Part 1: The Backbone**  
+[The SVD and the GSVD](#SVD)  
+
+**Part 2: Single Table Techniques**  
+**Chapter 2:** [Principal Components Analysis](#PCA)  
+  -  Use with: quantitative data   
+  
+**Chapter 3:** [Inferences for Principal Components Analysis](#InfPCA)  
+  -  Extension of PCA focusing on inferential techniques of permutation testing and bootstrapping.  
+  
+**Chapter 4:** [Correspondence Analysis](#CA)  
+  -  Use with: qualitative data, nominal data, contingency tables  
+  
+**Chapter 5:** [Multiple Correspondence Analysis](#MCA)  
+  -  Use with: qualitative data, contingency tables, disjuctly coded tables  
+
+**Part 3: Two Table Techniques**  
+**Chapter 6:** [Barycentric Discriminant Analysis](#BADA)  
+  -  Use with: Quantitative data with predetermined groups  
+  
+**Chapter 7:** [Discriminant Correspondence Analysis](#DiCA)  
+  -  Use with: Qualitative data where you need to break down the relationships between the variables  
+  
+**Chapter 8:** [Partial Least Squares Correlation](#PLSC)  
+  -  Use with: Two tables of data with two different sets of observations on the same set of variables, Two tables of data with two of the same sets of observations on different variables
+
+**Part 4: Multi-Table Techniques**  
+**Chapter 9:** [DiSTATIS](#DiSTATIS)  
+  -  Use with: Grouping data, each column is a judge 
+  
+**Chapter 10:** [MFA/STATIS](#MFA)  
+  -  Use with: Multiple differently scaled or sized tables containing information on the same observations 
+
+[**Bibliography**](#bib)  
+
+[Appendix: Mel-Frequency Cepstral Coefficients](#MFCCs)  
+
+\newpage
+
+## Datasets
+
+### Music Features
+
+The first dataset, and the on on which the majority of these analyses have been performed, is the "Music Features" dataset; a dataset of spectral decomposition of 1000 30-second samples of audio files. These data were created for a machine learning/spectral decomposition project. The project can be found [here](https://github.com/Insiyaa/Music-Tagging). The originator's goal was to identify the genre of a given audio file based on spectral components. The features were extracted using [libROSA](https://librosa.github.io/librosa/index.html). A general outline of the the data are below.  
+
+  - Rows: 1000 observations of 30 second samples, 100 each from 10 different genres of music The genres identified in the dataset are Blues, Classical, Country, Disco, Hiphop, Jazz, Metal, Pop, Reggae and Rock.
+   </br>
+  - Columns: 30 data points on each  
+    - Filename: an identifier for each observation. This variable was used only ever used as the row names for the data.  
+    - tempo: measured in beats per minute, extracted by the software  
+    - beats: number of beats included in the recording - how many beats appear in each 30 second file, based on the tempo determined in the decomposition.  
+    - chroma: a vector indicating the strength of representation of chroma (pitch class) in the audio file, averaged across both time and frequency domains.  
+    - RMS: Root Mean Square (listed in the dataset as rmse) - the root mean square of the signal; a measure of volume  
+    - Spectral Centroid: effectively a measure of timbre, measured in hertz  
+    - spectral bandwidth: the width of the auditory spectrum in the file, also measured in hertz
+    - rolloff: frequency point above which the file keeps less and less data, also measured in hertz
+    - zero-crossing rate: how often the signal crosses the zero threshold, how busy the data are (often indicates speech or percussion instruments)  
+    - 20 Mel-Frequency Cepstral Coefficients: measure of the strength of a given frequency spectrum across the time domain. More info [here](15-AppendixMFCCS.Rmd).    
+    - Label: Genre the goal of the algorithm - identifying audio files by spectral content. This variable is used as the design variable for these analyses, to compare groups.  
+  - Each of these variables, except for Filename and Genre, are numerical. They all represent very different values, which means that in order to be analyzed, they will need to be scaled in addition to being normalized.  
+     
+### Vowels & Colors
+
+This dataset was collected by Maxim Chastaing as part of his research on speech, language, and cognition.^[As of the date of final submission of this project, I have yet to be able to track down which specific publication it is, but I think it's [this one](https://www.worldcat.org/title/brillance-des-voyelles/oclc/494479265&referer=brief_results)] In this experiment, French participants were asked to associate vowels with colors. Each participant was presented with six colors and six vowel sounds, used in words that highlighted the sound in question, and asked which vowel associated most closely with which color. The participants could place more than one vowel with each color, but could only put each vowel in a single color 'bin'. The data take the form of a contingency table, shown below.
+```{r, echo = FALSE}
+vcdata <- read.csv("VowelsAndColors.csv", header = TRUE)
+rownames(vcdata) <- vcdata[,1]
+vcdata <- vcdata[,c(2:7)]
+vcmat <- as.matrix(vcdata)
+vctable <- pander::pander(vcmat)
+vctable
+```
+
+
+### Beer Sorting Data
+
+This dataset comes from an experiment done in Mexico, where participants were asked to sort beers into groups of their own determing. The majority of the beers come from Mexico and Central America, but there are a few European beers thrown in. There are three rows containing data on the participants: participant number, gender, and whether the participant reported that they preferred "craft" beer or "industrial" beer for their own consumption. The rows are each of the beers, and the intersection of a row and a column shows the group in which a participant placed a beer.  
+
+
+## Tools for Analysis
+
+**Research Questions:**  
+For each analysis, guiding principles are provided to aid in forming research questions, and there are suggested questions that are informed by the data and the analysis technique. In general, these questions will be exploratory in nature, as these analyses do not function in the same way as an ANOVA or a T-test might. The results from these analyses and the answers to these questions serve as useful guidelines to form hypotheses for further testing.   
+
+**Packages**  
+The following packages are being used for the analyses that follow. The specific packages used for each analysis are specified at the top of each page. For more information on any of these, load the package and then type ?packagename in the command line  
+
+**General packages for working with data:**  
+library(tidyverse) *Tidyverse contains a number of useful packages designed to work with data.*  
+library(knitr) *knitr is useful for displaying data in tables, using kable. Note: Kable works well with HTML, not powerpoint, and be careful with PDF.*  
+library(kableExtra) *Allows for more flexible and powerful tables, using the pipe syntax (%>%)*  
+library(pander) *Another helpful package for simple, clean tables. Works well for pdf.*  
+library(Matrix)  
+
+**Packages for Displaying or Visualizing Data:**  
+library(corrplot) *Specifically used for correlation plots*  
+library(ggplotify) *Works with ggplot2 (tidyverse) Necessary for turning some objects into graphical objects (grobs)*  
+library(ggpubr) *Works with ggplot2*  
+library(grid) *Allows you to arrange plots for effective display. There are other packages that do this as well*  
+library(gridExtra) *Works with grid to create more functionality.*  
+library(wesanderson)  
+
+**Packages for data analysis**  
+(these should be updated regularly from Dr. Abdi's github)  
+To update: devtools::install_github("herveabdi/[package]")  
+
+library(PTCA4CATA)  
+library(ExPosition)  
+library(InPosition)  
+library(TExPosition)  
+library(TInPosition)  
+library(MExPosition)  
+library(factoextra)  
+library(data4PCCAR)  
+library(DistatisR)  
+
+*Note: MExPosition must be updated from the [Cran Repository](https://cran.r-project.org/src/contrib/Archive/MExPosition/), then manually installed using the GUI*
+
+### A word on Plots
+
+There are some plots that are shown in this book almost a full page, and some that are shown much smaller in the interest of saving space. One of the beautiful things about r markdown/bookdown is that because the images are embedded, not screenshotted or copied and pasted, they are visible full size and you can zoom in and see incredible detail. So if there are any plots that you think aren't visible enough, just zoom in for detail.

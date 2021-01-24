@@ -1,0 +1,436 @@
+# (PART\*) Part III: Two-Table Techniques {-}
+
+
+# Barycentric Discriminant Analysis {#BADA}
+
+```{r, include=FALSE}
+rm(list = ls())
+# libraries ----
+library(tidyverse)
+library(ExPosition)
+#install.packages('TInPosition') # if needed
+library(TExPosition)
+library(TInPosition)
+library(PTCA4CATA)
+#devtools::install_github('HerveAbdi/data4PCCAR')
+library(data4PCCAR)
+library(corrplot)
+library(ggrepel)
+library(gridExtra)
+library(grid)
+library(ggplotify)
+library(kableExtra)
+library(knitr)
+library(gplots)
+suppressMessages(library(factoextra))
+suppressMessages(library(ggpubr))
+suppressMessages(library(data4PCCAR) )
+suppressMessages(library(PTCA4CATA))
+library(wesanderson)
+```
+
+
+## Intro to BADA
+
+Discriminant analysis is a method of analysis that analyzes a dataset in which multiple measures (variables) describe observations. BADA is a method used on a dataset in which each observation belongs to or can be assigned to a specific pre-determined category. At first glance, it appears that we're only using a single table, but the way BADA works is to create a separate table of the group means by variables that is used to create the factor space. This explains the difference in appearance between the axes of our [PCA](#PCA) and the ones created here. After the PCA is performed on the barycenters of the groups, the individual observations are projected onto the group factor plot as supplementary observations. The BADA then determines, relative to the barycenters, which of the individual observations fit into which groups. The analysis below also creates a confusion matrix, which shows us how many of the observations from each group get classified into each group, and to which groups they get classified. An ideal result would show each result classified in its respective group. For more on BADA, see @Abdi2010e, @Abdi2018.   
+
+### Strengths & Weaknesses
+**Strengths**  
+  - Even if the groups aren't very well differentiable, that information alone can be a useful metric. If you're expecting groups to be different, and they aren't, or vice-versa, that can tell you that there's something to dig in to, or that you did your analysis wrong. Either way, useful information.   
+  - The group discrimination is useful for figuring out whether the groups are real or not. You can see whether you're just looking at a large dataset, in which case the confidence intervals (from bootstrapping) for the means will be fairly tight, and it will appear like there are group differences, even if there is a lot of overlap and there may not be real differences between the groups.  
+**Weaknesses**   
+  - Because the groups are discriminated relative to the barycenters of the groups, if there are tightly clustered group means and lots of observations, it's difficult to assign the observations to groups. Looking at the tolerance intervals is helpful in this regard because it can give you an idea of how much the observations overlap and how likely you are to be able to discriminate between the groups.
+
+### Dos and Don'ts
+**Do:**  
+  - Remember that the accuracy of the confusion matrix is relative to how many groups you have. If you have two groups, 50% is chance. If you have three groups, 33.3% is chance, and so on.  
+  - Remember that although group means represent our best estimate for a given group, tolerance intervals show you how much the observations for the groups really overlap.  
+  
+**Don't:**    
+  - Fool yourself into thinking that your results are truly generalizable. When you're evaluating your fixed and random effects, you're still only generalizing within your sample. Things like demographic data, which won't have changed between your full sample and your leave-one-out model, will still need to inform your interpretation.  
+
+**Research Questions**  
+Questions for BADA should be guided by the idea of group differences.  
+  - How are we separating groups across the extracted principal components?  
+  - Are these group differentiable enough for accurate classification of observations?  
+  - What can the confusion matrix tell us about the distribution of our observations?  
+
+## Data
+
+This dataset is the music features dataset, it's the same as the one used for the [PCA](#PCA). Here's what the data table looks like. I've pulled out one of each  of the first five genres in the table to show what the variables/measures and the values/observations look like in the interest of saving space, only 8 variables are shown. Call `head(mfdata)` to see more.
+
+```{r}
+# The data ----
+mfdata <- read.csv("data.csv", header = TRUE)
+rownames(mfdata) <- mfdata[,1]
+mfdata <- mfdata[,c(2:30)]
+colnames(mfdata) <- c("bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl")
+
+music.genre <- mfdata$lbl
+mfmat <- as.matrix(mfdata[,1:28]) #removes "genre" from table
+mfdata <- mfdata[,1:28]
+
+mftable <- kable(mfdata[c(1,101,201,301,401), c(3:10)],
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+mftable
+
+Xmat <- mfdata[, c(11:16, 18:23, 25)]
+Ymat <- mfdata[, c(3:10, 17)]
+Nmat <- mfdata[, c(1,2,11,24,26:28)]
+
+```
+
+### Raw Data Visualization: Heat Map
+
+The heatmap below shows the average normalized values of each of the variables by group. On the left side, we have the named spectral components and on the right we have the MFCCs. Each of the variables shows something interesting about music genre. For bpm/b (the first two columns) we see higher average values (and therefore higher tempos) for Reggae, Classical, and Metal. Higher tempos in Metal seems self-explanatory, but Classical and Reggae may be a little bit less intuitive. Because these were electronically extracted signal data, the program analyzes the periodicity of the volume cycles (stronger beats are generally louder) to extract the number of beats in the file and therefore the tempo. Although reggae does tend to be slower, there may be less variability in the volume across beats compared to say, country, so the program likely extracted more beats as significant in its analysis. Reggae also uses a different beat cycle for strong and weak beats than the other genres here. In most blues, rock, jazz, country, etc., there are accents on the 'backbeat', or beats 2 and 4. In Reggae, that cycle is turned around, and the accents go on 1 and 3. This may account for the difference in analysis between the genres.  For classical, it may surprise many people to hear that may classical tunes are quite quick and have high bpms. Also, because the signal extraction for beats often relies on percussive signals (wide frequency bands & sharp attack envelope), and classical music has less consistent percussion instruments, it has to rely on other signals, which may contribute to this value.  
+
+Notice that classical and pop have very different levels of Spectral Bandwidth, Spectral Centroid, and Roll off. This makes sense in light of the understanding how the respective genres are recorded. Acoustic instruments are able to produce less extreme spectral components than can be produced electronically. Also, seeing that metal has the highest average Zero Crossing Rate makes sense knowing that the ZCR is used as a measure of how busy a signal is, and is often a good indicator of percussion instruments and distortion, and Metal is a percussion - heavy genre.  
+
+Because the heatmap below compares the means of the groups/variables, they are being compared (as the key shows us) by z-scores. This means that the 'pure orange' are the most average values and likely reflect genres that sit closest to the barycenter. Those with more extreme values (darker reds or lighter yellows) are further from the mean and likely indicate that the group sits further from the barycenter.  
+
+```{r, fig.align = "center", fig.height = 6}
+gm4hm <- getMeans(mfdata, music.genre)
+lmat = rbind(c(0,3,0),c(2,1,0),c(0,4,0))
+lwid = c(.5,3,.5)
+lhei = c(1,4,1.5)
+gmheatmat <- heatmap.2(as.matrix(gm4hm),scale = "column", 
+                       Rowv = NA, Colv = NA, 
+                       dendrogram = 'none', trace = 'none', 
+                       main = "Heatmap of Means of the Variables, by Genre",
+                       lmat = lmat, lhei = lhei, lwid = lwid)
+```
+
+### Correlation Plots
+
+The standard correlation plot below shows the correlations visually (top) and numerically (bottom). The variables are ordered according to their loadings on the first component. This makes sense given our results from the [PCA](#PCA), namely that the even MFCCs greater than 2 load positively on the first component and the odd MFCCs greater than 1 load negatively on the first component. It makes sense that these are opposed to one another as they are intentionally decorrelated. Likewise, the variables that load more heavily on the second component (or, in the case of b and bpm, the 3rd or 4th component) are more central in the plot.  
+
+```{r, out.width = '100%', out.height= '100%', fig.show = 'hold', fig.align="center"}
+mfcor <- cor(mfdata)
+
+corrplot(mfcor, diag = F, type = "upper", method = "ellipse", order = "FPC", tl.cex = .5, tl.pos = "n") %>%
+corrplot(mfcor, add = TRUE, diag = F, type = "lower", method = "number", addCoefasPercent = T, order = "FPC", col = "grey", tl.cex = .5, number.cex = .5, tl.pos = "ld")
+
+cor.plot.r <- recordPlot()
+
+```
+
+
+
+## Analysis
+
+This next section runs the actual BADA analysis. `tepBADA` runs the BADA and `tepBADA.inference.battery` runs the inference battery that allows us to check variables.  
+
+```{r echo = TRUE, message = FALSE, warning=FALSE}
+# Run BADA  ----
+mfBADA <- tepBADA(mfdata, DESIGN = music.genre,
+                   graphs = FALSE)
+# Inferences ----
+set.seed(70301) # we have a problem with the inference part
+  # it will be addressed soon. In the meantime we fix the seed
+  # for random 
+nIter = 100
+mfBADA.inf <- tepBADA.inference.battery(mfdata, 
+                  DESIGN = music.genre,
+                  test.iters = nIter,
+                  graphs = FALSE)
+```
+
+
+## Results
+
+### Scree
+
+The scree plot shows us which of the eigenvalues extracted by the BADA are significant. The dimensions here (9) are one less than the number of groups. The *p* values associated with the eigenvalues show us which values (via permutation testing in `tepBADA.inference.battery`) are significant. See [Inference PCA](#InfPCA) for more on interpreting scree plots and their permutations. Here we have an interesting example where the first eigenvalue, although the strongest, seems to be not significant. As we discussed in earlier pages, the first eigenvalue is essentially an omnibus test, the non-significance of which seems to carry through this entire analysis.  
+
+```{r}
+# The ScreePlot. Fixed Effects. ----
+PlotScree(ev = mfBADA$TExPosition.Data$eigs,
+          p.ev = mfBADA.inf$Inference.Data$components$p.vals,
+          title = 'BADA Music Features: Inertia Scree Plot',
+          plotKaiser = TRUE, 
+          color4Kaiser = ggplot2::alpha('darkorchid4', .5),
+          lwd4Kaiser  = 2)
+```
+
+```{r echo = FALSE, out.width = '50%', fig.show='hold', ncols = 2, nrows = 2}
+zeDim = 1
+pH1I <- prettyHist(
+  distribution = mfBADA.inf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mfBADA.inf$Inference.Data$components$eigs[zeDim], 
+           xlim = c(0, 1), # needs to be set by hand
+           breaks = 20,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE,
+           cutoffs = c( 0.975))
+zeDim = 2
+pH2I <- prettyHist(
+  distribution = mfBADA.inf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mfBADA.inf$Inference.Data$components$eigs[zeDim], 
+           xlim = c(0, 1), # needs to be set by hand
+           breaks = 20,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+```
+
+
+```{r, echo = FALSE}
+cfv <- unique(c(wes_palettes$BottleRocket2, wes_palettes$Rushmore1, wes_palettes$Royal2, wes_palettes$Zissou1, 
+                wes_palettes$Darjeeling1, wes_palettes$Darjeeling2[2:4]))
+```
+
+### Factor Map & Observations
+
+The map produced below shows us the factor scores of all of the observations and the means of the groups plotted on top of the principal components. It looks similar to each of the factor maps produced before, but is flipped around both axes from the factor map we saw in [PCA](#PCA). As discussed in [MCA](#MCA), this simply an artifact of coincidence. 
+
+```{r echo = TRUE}
+#  Factor map for the observations
+Imap <- createFactorMap(mfBADA$TExPosition.Data$fii, alpha.points = .1,
+                        col.points = mfBADA$Plotting.Data$fii.col, display.labels = FALSE
+                        )
+# make labels for the graph
+label4Map <- createxyLabels.gen(1,2,
+                                lambda = mfBADA$TExPosition.Data$eigs,
+                                tau = mfBADA$TExPosition.Data$t)
+# Get the means for the next plot using genre as a design variable
+genremeans <- getMeans(mfBADA$TExPosition.Data$fii, music.genre)
+# Map for the means of the genres/groups
+MapGroup <- createFactorMap(genremeans, col.points = unique(mfBADA$Plotting.Data$fii.col), 
+                             # use the constraint from the main map
+                             constraints = Imap$constraints, 
+                             pch = 17, cex = 6, text.cex = 5
+                             )
+# Put it all together:
+a003.bada <- Imap$zeMap + label4Map + MapGroup$zeMap_dots + MapGroup$zeMap_text
+a003.bada
+```
+
+
+### Confidence Intervals for Means
+
+The graph below shows us the same factor map as above, but with the confidence intervals for the means, as determined by the inference battery, plotted as an oval around the group mean. As you can see, the confidence intervals are pretty tight, which means, basically, that I have a large, consistent dataset.
+
+```{r, echo = TRUE}
+# Create Confidence Interval Plots
+fi.boot <- mfBADA.inf$Inference.Data$boot.data$fi.boot.data$boots
+# This helps us get the colors by replacing the punctuation in the rownames with nothing,
+# hence the "". The effect is the deletion of the punctuation.
+rownames(fi.boot) <- sub("[[:punct:]]","",rownames(fi.boot))
+# use function MakeCIEllipses from package PTCA4CATA
+GraphElli <- MakeCIEllipses(mfBADA.inf$Inference.Data$boot.data$
+                              fi.boot.data$boots[,c(1,2),],
+                            col = unique(mfBADA$Plotting.Data$fii.col), 
+                            p.level = .95
+                            )
+# Put everything together 
+a004.bada.withCI <-  Imap$zeMap_background + Imap$zeMap_dots + 
+                     MapGroup$zeMap_dots + MapGroup$zeMap_text +
+                     GraphElli + label4Map +
+                     ggtitle('BADA: Group Centers with CI and Observations')
+
+a004.bada.withCI
+```
+
+### Tolerance Intervals
+
+The tolerance intervals surround all of the datapoints in the data. They show you explicitly what the boundaries of the distributions of your data are. This is useful especially in this example and in [DiCA](#DiCA) for comparing to our group barycenters. If the dispersion is wide and the group mean CI is tight, then it's likely that the tightness of that confidence interval is due to the size of the data. That's the case here, where we have the observations for these groups overlapped, even though the means and confidence intervals are not. That suggests that we may have issues in differentiating between groups.
+
+```{r echo = TRUE, fig.height = 6, out.width='65%', fig.align = 'center'}
+# This creates hulls for the groups
+Fii <- mfBADA$TExPosition.Data$fii
+colnames(Fii) <- paste0('Dimension ', 1:ncol(Fii))
+# getting the color correct: an ugly trick
+col4Hull <- unique(mfBADA$Plotting.Data$fii.col)
+GraphHull <- MakeToleranceIntervals(Fii,
+                                 design = music.genre,
+                                 col = col4Hull,
+                                 # the next line is required 
+                                 names.of.factors =  c("Dim1","Dim2"),
+                                 p.level = 1.00,
+                                 alpha.ellipse = .05
+                                 )
+a006.bada.withHull <-  Imap$zeMap_background + Imap$zeMap_dots + 
+            MapGroup$zeMap_dots + MapGroup$zeMap_text +
+            GraphHull + label4Map +
+            ggtitle('BADA: Group Centers with Hulls and Observations')
+
+a006.bada.withHull
+```
+
+### Variable Loadings
+
+The graph below shows us what variables load on what component and to what extent. The closer an arrow is to the edge, the more variance is extracted. The angle between the variables determines the strength of their relation. Approaching 0 or 180 degrees indicates a strong correlation, and the direction of that correlation. Approaching 90 degrees indicates a weak correlation, and 90 degrees is perfectly uncorrelated.
+
+```{r, echo = FALSE, out.width = '48%', out.height= '48%', fig.show = 'hold', ncol = 2}
+# J-set ----
+# gt colors
+col4X <- prettyGraphsColorSelection(n.colors = ncol(Xmat),
+                                    starting.color = 42)
+col4Y <- prettyGraphsColorSelection(n.colors = ncol(Ymat),
+                                    starting.color = 13)
+col4N <- prettyGraphsColorSelection(n.colors = ncol(Nmat),
+                                    starting.color = 1)
+col4Var = c(col4X,col4Y,col4N)
+
+Fj <- mfBADA$TExPosition.Data$fj
+baseMap.j <- PTCA4CATA::createFactorMap(Fj,
+                                        col.points   = cfv,
+                                        alpha.points =  .3,
+                                        col.labels   = cfv)
+zeArrows <- addArrows(Fj, color = cfv)
+# A graph for the J-set
+# A graph for the J-set
+b001.aggMap.j <- baseMap.j$zeMap_background + # background layer
+  baseMap.j$zeMap_dots + baseMap.j$zeMap_text +  # dots & labels
+  label4Map 
+b002.aggMap.j <- b001.aggMap.j + zeArrows
+
+#b001.aggMap.j
+#b002.aggMap.j
+
+```
+
+```{r, echo = TRUE, fig.align= "center"}
+cor.loading <- cor(mfdata, mfBADA.inf$Fixed.Data$TExPosition.Data$fii)
+#colnames(cor.loading) <- rownames(cor.loading)
+
+loading.plot <- createFactorMap(cor.loading,
+                                constraints = list(minx = -1, miny = -1,
+                                                   maxx = 1, maxy = 1),
+                                col.points = cfv)
+
+LoadingMapWithCircles <- loading.plot$zeMap + 
+  addArrows(cor.loading, color = cfv) + 
+  addCircleOfCor() + xlab("Component 1") + ylab("Component 2")
+
+LoadingMapWithCircles
+```
+
+### Contributions and Bootstrap Ratios
+
+The plot below shows which variables contribute significantly to which components, and in what direction they contribute. The Bootstrap ratios show the same directionality, but they indicate the proportion of bootstrap ratios that significantly load on those components. The results we see below are much the same as we've seen in previous pages. See for example, the page on [Inference PCA](#InfPCA) for more on reading these plots.
+
+```{r, echo = TRUE}
+#_____________________________________________________________________
+#  Contributions Plots
+#     Dimension 1
+ctrj <- mfBADA$TExPosition.Data$cj
+signed.ctrj <- ctrj * sign(Fj)
+# BR1
+c001.plotCtrj.1 <- PrettyBarPlot2(
+                       bootratio = round(100*signed.ctrj[,1]), 
+                       threshold = 100 / nrow(signed.ctrj), 
+                       ylim = NULL, 
+                       color4bar = gplots::col2hex(cfv),
+                       color4ns = "gray75", 
+                       plotnames = TRUE, 
+                       main = 'Important Contributions Variables. Dim 1.', 
+                       ylab = "Signed Contributions")
+#     Dimension 2 
+c002.plotCtrj.2 <- PrettyBarPlot2(
+  bootratio = round(100*signed.ctrj[,2]), 
+  threshold = 100 / nrow(signed.ctrj), 
+  ylim = NULL, 
+  color4bar = gplots::col2hex(cfv),
+  color4ns = "gray75", 
+  plotnames = TRUE, 
+  main = 'Important Contributions Variables. Dim 2.', 
+  ylab = "Signed Contributions")
+#___________________________________________________________________
+# Bootstraps
+BRj <- mfBADA.inf$Inference.Data$boot.data$fj.boot.data$tests$boot.ratios
+#     Dimension 1
+d001.plotBRj.1 <- PrettyBarPlot2(
+  bootratio = BRj[,1], 
+  threshold = 2, 
+  ylim = NULL, 
+  color4bar = gplots::col2hex(cfv),
+  color4ns = "gray75", 
+  plotnames = TRUE, 
+  main = 'Bootstrap Ratios Variables. Dim 1.', 
+  ylab = "Bootstrap Ratios")
+#     Dimension 2
+d003.plotBRj.2 <- PrettyBarPlot2(
+  bootratio = BRj[,2], 
+  threshold = 2, 
+  ylim = NULL, 
+  color4bar = gplots::col2hex(cfv),
+  color4ns = "gray75", 
+  plotnames = TRUE, 
+  main = 'Bootstrap Ratios Variables. Dim 2.', 
+  ylab = "Bootstrap Ratios")
+```
+
+
+```{r echo = FALSE, fig.width = 15, fig.height = 8, fig.show='hold'}
+  grid.arrange(
+    as.grob(c001.plotCtrj.1),
+    as.grob(c002.plotCtrj.2),
+    as.grob(d001.plotBRj.1),
+    as.grob(d003.plotBRj.2),
+    ncol = 2,nrow = 2,
+    top = text_grob("Barplots for variables", size = 18, face = 'bold')
+  )
+```
+
+
+## Evaluation
+
+The two tables below show us how well the BADA model represents, or classifies, the data. The question each table answers is, for the fixed effects, "Can I classify the data that I have?", and for the random effects, "Can I classify new data?".In a perfect world, the cell at the intersection of each genre, actual and predicted cells would show 100% of the audio files in that cell. The top table is the fixed effects model, and has a descriptive accuracy of `r mfBADA.inf$Inference.Data$loo.data$fixed.acc*100`%, which is very low, even considering that chance for this many groups is 10%. This is probably because the process of classifying music by genre is very difficult. Looking at the tolerance intervals for the groups best represents the overlap between the groups and the inherent difficulty of this task. The bottom table is the Random Effects (leave one out) Model, and it has an accuracy of `r mfBADA.inf$Inference.Data$loo.data$loo.acc*100`%. This is also pretty terrible. 
+
+What sticks out to me here is how many the predicted observations there are for Country, Disco, Reggae, and Rock. Looking back at the factor map, we see that these genres are the ones with means that are closest to the barycenter, so it makes sense that the observations that cluster there are reflected in that. It's also remarkable how few Classical, Metal, and Pop tunes were accurately predicted. This makes sense in light of how far from the barycenter their means are relative to the other genres.   
+
+```{r}
+mffixmat <- mfBADA.inf$Inference.Data$loo.data$fixed.confuse
+mffrowsums <- rowSums(mffixmat)
+mffixmat <- cbind(mffixmat, mffrowsums)
+
+mfloomat <- mfBADA.inf$Inference.Data$loo.data$loo.confuse
+mfrrowsums <- rowSums(mfloomat)
+mfloomat <- cbind(mfloomat, mfrrowsums)
+
+mffixtab <- kable(data.frame(mffixmat),
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mflootab <- kable(mfloomat,
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mffixtab
+mflootab
+```
+
+
+
+```{r, include = FALSE}
+# End of Creating Graphics ----
+# save a pptx
+# Automatic save with saveGraph2pptx
+#savedList <- PTCA4CATA::saveGraph2pptx(file2Save.pptx = path2save, 
+#                                       title = dasTitel, 
+#                                       addGraphNames = TRUE)
+```
+
+## Conclusions
+
+ *  **Groups**  
+    +  Groups have a lot of overlap and it’s difficult to distinguish them.
+    +  Music Genre identification depends on a number of factors that, although hypothetically quantifiable, and therefore perceptible to a computer, are not present in this dataset.
+    
+ *  **Component 1**  
+    +  Not actually significant. Makes sense given the groups and how close they are and how much they overlap. Also, considering that we’re looking at multiple measures of the same thing (MFCCs) it looks like BADA has picked out that they don’t accurately distinguish between genres.  
+    
+ *  **Component 2**  
+    +  Significant: separates weight of fundamental tone of audio from other MFCCs and shows how MFCC2 is anti-correlated with other spectral components.  
+    
+ *  **Interpretation**  
+    +  MFCCs have been driving the PC’s to this point, but BADA has pulled that out of the model. Although it’s the strongest source of variance, it doesn’t differentiate significantly enough between the groups of observations.  
+    +  As I said in the introduction, being able to differentiate between groups or not being able to differentiate between groups are equally valuable pieces of information. One of the things that we see here is that the model doesn't predict well what group the observations should belong to. What this tells us is that the process of quantifying to which genre a musical excerpt or sample belongs is a difficult process and involves processing information that the we don't have in this dataset. This information could be things like language, specific scale features, and the way in which harmony is used. 

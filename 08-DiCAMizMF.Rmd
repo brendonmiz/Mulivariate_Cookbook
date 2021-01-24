@@ -1,0 +1,673 @@
+# Discriminant Correspondence Analysis {#DiCA}
+
+```{r, include=FALSE}
+
+rm(list = ls())
+
+# libraries ----
+library(tidyverse)
+library(ExPosition)
+#install.packages('TInPosition') # if needed
+library(TExPosition)
+library(TInPosition)
+library(PTCA4CATA)
+#devtools::install_github('HerveAbdi/data4PCCAR')
+library(data4PCCAR)
+library(corrplot)
+library(ggrepel)
+library(gridExtra)
+library(grid)
+library(ggplotify)
+library(kableExtra)
+library(knitr)
+library(gplots)
+suppressMessages(library(factoextra))
+suppressMessages(library(ggpubr))
+suppressMessages(library(data4PCCAR) )
+suppressMessages(library(PTCA4CATA))
+library(wesanderson)
+library(pander)
+```
+
+## Intro to DiCA
+
+DiCA is an extension of what we saw in [MCA](#MCA) and [CA](#CA), in that it allows us to decompose some of the relationships between multiple categorical variables, or levels of quantitative variables. It's also similar to what we did in [BADA](#BADA), in that one of the goals is to group the observations.  
+Like the CA, we'll need something similar to a contingency table. In the analysis below, R treats each level of our variables as a single variable. Obviously with 1000 possible values for each variable, this would make our dataset and its analysis prohibitively large. In order to do this, we'll bin the variables and run the DiCA on an indicator matrix. An indicator matrix is a complete disjunctly coded matrix with observations being represented by one and only one '1' for any level of a variable. There's more on that later in [Binning and the Complete Disjunct Table][Binning and the Complete Disjunct Table]. While the overall output with regard to factor scores for the variables looks similar to CA, it's necessary to make some adjustments in our interpretation. For more on DiCA, see @Abdi2007c.
+Once the variables are binned, a [correspondence analysis](#CA) is performed on the groups by binned variables matrix, and the group means and the variables are plotted in the new factor space. Just like BADA, we then project the original observations and classify the observations into groups based on the nearest barycenter.
+
+### Strengths & Weaknesses
+**Strengths**  
+  - This is a useful combination technique that combines some of the most useful things about BADA and CA.  
+  - Because you can compare group means and variables in the same space, it provides an intuitive understanding of what levels of which variables are loading in what ways on the factor space and how that affects group separation.  
+  - Great for breaking down variables into bins, so if you have data or factor plots from a [PCA](#PCA) that are non-linear, you can see how the various levels of the variables load onto the factor space.  
+  - Pre-processing (histograms, etc.) force you to take a close look at your data.  
+  - It's great to be able to see which variables are loading on which dimensions, which ones are not, and why.  
+  
+**Weaknesses**   
+  - Plots can be visually very busy and require some time to construct and interpret. May require extra steps to create additional plots with things broken down.  
+  - Similar issue to BADA regarding group differentiability. If the groups have differentiable means but lots of overlap for the observations, it may not be a good tool for classification. However, how well the groups are differentiable alone can also tell you something about the groups.
+
+### Dos and Don'ts
+
+**Do:**  
+  - Remember that this is a combination of techniques and offers some of the strengths and drawbacks of both.
+  - Remember that the accuracy of the confusion matrix is relative to how many groups you have. If you have two groups, 50% is chance. If you have three groups, 33.3% is chance, and so on.  
+  - Remember that although group means represent our best estimate for a given group, tolerance intervals show you how much the observations for the groups really overlap.  
+**Don't:**    
+  - Forget to consider both techniques when interpreting the results of this analysis.  
+  - Fool yourself into thinking that your results are truly generalizable. When you're evaluating your fixed and random effects, you're still only generalizing within your sample. Things like demographic data, which won't have changed between your full sample and your leave-one-out model, will still need to inform your interpretation.  
+
+**Research Questions**  
+Questions for DiCA can focus on two separate major concepts: how bins quantitative variables, or levels of qualitative/nominal variables load on the principal axes, and how the groups differ relative to those loadings.  
+  - How do different levels of variables combine to create the group means?  
+  - How do different levels of variables separate the group means along the two principal axes?  
+  - What combinations of variables and their levels combine to create a typical observation from a certain group?  
+  - How are we separating groups across the extracted principal components?  
+  - Are these group differentiable enough for accurate classification of observations?  
+  - What can the confusion matrix tell us about the distribution of our observations?  
+
+
+## Data
+
+We're using the music features dataset for this analysis, the same as the one used for the [PCA](#PCA). As stated above, we'll need an indicator matrix to run the MCA on, which means we'll need to do some editing of our data to make it work. Below is our original data. I've pulled out one of each of the first five genres in the table to show what the variables/measures and the values/observations look like in the interest of saving space, only 8 variables are shown. Call `head(mfdata)` to see more.
+
+```{r, echo = FALSE}
+# The data ----
+mfdata <- read.csv("data.csv", header = TRUE)
+rownames(mfdata) <- mfdata[,1]
+mfdata <- mfdata[,c(2:30)]
+colnames(mfdata) <- c("bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl")
+
+music.genre <- mfdata$lbl
+mfmat <- as.matrix(mfdata[,1:28]) #removes "genre" from table
+mfdata <- mfdata[,1:28]
+
+mftable <- kable(mfdata[c(1,101,201,301,401), c(3:10)],
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+mftable
+
+```
+
+### Data Preparation
+
+Because an DiCA evaluates a table of disjuctively coded data, we need to take a couple of steps to make sure the data is prepared to run the MCA. We do the following:
+
+ 1. Evaluation
+ 2. Binning
+ 3. Spearman Rank testing
+ 4. Nominalizing
+ 
+At the end of this, you should end up with a dataset with the same number of rows, but more columns, because of the binning and nominalizing. If you're lucky enough to be able to use the same number of bins for each variable, it'll be the number of bins times the number of variables. For this dataset, that would be 4, (the default for the function we use below) times 28, or 112 columns.
+
+#### Evaluation
+
+This chunk gets us colors for the variables we'll be using throughout. `cfv` stands for color for variables and `cfb` stands for color for bootstraps. You'll see why `cfb` is four of `cfv` later.
+
+```{r, echo = TRUE}
+cfv <- unique(c(wes_palettes$BottleRocket2, wes_palettes$Rushmore1, 
+                wes_palettes$Royal2, wes_palettes$Zissou1, 
+                wes_palettes$Darjeeling1, 
+                wes_palettes$Darjeeling2[2:4]))
+cfb <- matrix(nrow = 28, ncol = 4)
+cfb[,1:4] <- as.matrix(cfv)
+```
+
+First thing we do before we bin is check out our data a little more closely, looking at range, mins and maxes, and distribution of our data. To that end, `summary()` shows us a summary of the data, and `str()` shows us the structure. The histograms below show us how each of the variables is distributed. We're looking for anything out of the ordinary that would make us want to bin our data in a special way. One effective way we can visualize our data is to check out histograms of each of the variables.  
+Sample code to create the histograms:  
+```{r echo = TRUE}
+h1  <- ggplot(data = mfdata, aes(x = bpm)) +  geom_histogram(bins = 30, fill = cfv[1]) + 
+        geom_vline(xintercept = quantile(mfdata$bpm)[2:4])
+```
+
+The majority of the variables look like they have an approximately normal distribution, but you should always check to see if any look like they might have a bimodal distribution or some kurtosis or skewness.If you have a variable that has a different kind of distribution, like a Poisson distribution or a lomax distribution, you may need to do some extra pre-processing before binning or analysis. In the example we have here, the zcr variable looks slightly skewed towards the left, which suggests that the majority of the audio files contain large amounts of percussion, which makes sense given our genres. It also makes sense given our factor map, which shows that ZCR is negatively correlated with the Classical genre, which may be more likely to contain only string, brass, or woodwind instruments, and positively correlated with Metal and Hip-Hop, which tend to feature percussive sounds more prominently and consistently.
+
+```{r, echo = FALSE, fig.width = 14, fig.height = 9, out.height='40%', fig.align='center'}
+#Get summary (summary) and structure (str) of data
+
+#mfsummary <- summary(mfdata)
+#mfstruct  <- str(mfdata)
+
+#visualize histograms of each column using hist()
+
+
+h2  <- ggplot(data = mfdata, aes(x = b)) +  geom_histogram(bins = 30, fill = cfv[2]) + geom_vline(xintercept = quantile(mfdata$b)[2:4])
+h3  <- ggplot(data = mfdata, aes(x = ch)) +  geom_histogram(bins = 30, fill = cfv[3]) + geom_vline(xintercept = quantile(mfdata$ch)[2:4])
+h4  <- ggplot(data = mfdata, aes(x = rmse)) +  geom_histogram(bins = 30, fill = cfv[4]) + geom_vline(xintercept = quantile(mfdata$rmse)[2:4])
+h5  <- ggplot(data = mfdata, aes(x = spec_c)) +  geom_histogram(bins = 30, fill = cfv[5]) + geom_vline(xintercept = quantile(mfdata$spec_c)[2:4])
+h6  <- ggplot(data = mfdata, aes(x = spec_b)) +  geom_histogram(bins = 30, fill = cfv[6]) + geom_vline(xintercept = quantile(mfdata$spec_b)[2:4])
+h7  <- ggplot(data = mfdata, aes(x = r_o)) +  geom_histogram(bins = 30, fill = cfv[7]) + geom_vline(xintercept = quantile(mfdata$r_o)[2:4])
+h8  <- ggplot(data = mfdata, aes(x = zcr)) +  geom_histogram(bins = 30, fill = cfv[8]) + geom_vline(xintercept = quantile(mfdata$zcr)[2:4])
+h9  <- ggplot(data = mfdata, aes(x = mfcc1)) +  geom_histogram(bins = 30, fill = cfv[9]) + geom_vline(xintercept = quantile(mfdata$mfcc1)[2:4])
+h10 <- ggplot(data = mfdata, aes(x = mfcc2)) +  geom_histogram(bins = 30, fill = cfv[10]) + geom_vline(xintercept = quantile(mfdata$mfcc2)[2:4])
+h11 <- ggplot(data = mfdata, aes(x = `3`)) +  geom_histogram(bins = 30, fill = cfv[11]) + geom_vline(xintercept = quantile(mfdata$`3`)[2:4])
+h12 <- ggplot(data = mfdata, aes(x = `4`)) +  geom_histogram(bins = 30, fill = cfv[12]) + geom_vline(xintercept = quantile(mfdata$`4`)[2:4])
+h13 <- ggplot(data = mfdata, aes(x = `5`)) +  geom_histogram(bins = 30, fill = cfv[13]) + geom_vline(xintercept = quantile(mfdata$`5`)[2:4])
+h14 <- ggplot(data = mfdata, aes(x = `6`)) +  geom_histogram(bins = 30, fill = cfv[14]) + geom_vline(xintercept = quantile(mfdata$`6`)[2:4])
+h15 <- ggplot(data = mfdata, aes(x = `7`)) +  geom_histogram(bins = 30, fill = cfv[15]) + geom_vline(xintercept = quantile(mfdata$`7`)[2:4])
+h16 <- ggplot(data = mfdata, aes(x = `8`)) +  geom_histogram(bins = 30, fill = cfv[16]) + geom_vline(xintercept = quantile(mfdata$`8`)[2:4])
+h17 <- ggplot(data = mfdata, aes(x = `9`)) +  geom_histogram(bins = 30, fill = cfv[17]) + geom_vline(xintercept = quantile(mfdata$`9`)[2:4])
+h18 <- ggplot(data = mfdata, aes(x = `10`)) +  geom_histogram(bins = 30, fill = cfv[18]) + geom_vline(xintercept = quantile(mfdata$`10`)[2:4])
+h19 <- ggplot(data = mfdata, aes(x = `11`)) +  geom_histogram(bins = 30, fill = cfv[19]) + geom_vline(xintercept = quantile(mfdata$`11`)[2:4])
+h20 <- ggplot(data = mfdata, aes(x = `12`)) +  geom_histogram(bins = 30, fill = cfv[20]) + geom_vline(xintercept = quantile(mfdata$`12`)[2:4])
+h21 <- ggplot(data = mfdata, aes(x = `13`)) +  geom_histogram(bins = 30, fill = cfv[21]) + geom_vline(xintercept = quantile(mfdata$`13`)[2:4])
+h22 <- ggplot(data = mfdata, aes(x = `14`)) +  geom_histogram(bins = 30, fill = cfv[22]) + geom_vline(xintercept = quantile(mfdata$`14`)[2:4])
+h23 <- ggplot(data = mfdata, aes(x = `15`)) +  geom_histogram(bins = 30, fill = cfv[23]) + geom_vline(xintercept = quantile(mfdata$`15`)[2:4])
+h24 <- ggplot(data = mfdata, aes(x = `16`)) +  geom_histogram(bins = 30, fill = cfv[24]) + geom_vline(xintercept = quantile(mfdata$`16`)[2:4])
+h25 <- ggplot(data = mfdata, aes(x = `17`)) +  geom_histogram(bins = 30, fill = cfv[25]) + geom_vline(xintercept = quantile(mfdata$`17`)[2:4])
+h26 <- ggplot(data = mfdata, aes(x = `18`)) +  geom_histogram(bins = 30, fill = cfv[26]) + geom_vline(xintercept = quantile(mfdata$`18`)[2:4])
+h27 <- ggplot(data = mfdata, aes(x = `19`)) +  geom_histogram(bins = 30, fill = cfv[27]) + geom_vline(xintercept = quantile(mfdata$`19`)[2:4])
+h28 <- ggplot(data = mfdata, aes(x = `20`)) +  geom_histogram(bins = 30, fill = cfv[28]) + geom_vline(xintercept = quantile(mfdata$`20`)[2:4])
+
+histarrange <- grid.arrange(h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, h15, h16, h17, h18, h19, h20, h21, h22, h23, h24, h25, h26, h27, h28, 
+             ncol = 7, nrow = 4, 
+             top = text_grob("Histograms Showing Data Distribution for Music Features Variables"))
+
+
+```
+
+#### Binning and the Complete Disjunct Table
+
+This chunk is actually steps 2, 3, and 4 listed above. 
+
+Because of the size of the dataset (1000 observations), I don't really see anything that makes me think I should specify any specific binnings for these data, so we're going to go with the default for `BinQuant()`, which is four.
+
+First thing I'm going to do is create a dataframe to put our binned variables in. Then I'm going to run a for loop binning the variables, and then another loop over those data using the Spearman Rank Correlation to test how well they correlate with the original data. The function we use for the Spearman rank correlation is `cor(x, y, method = "spearman")`. This correlation is only helpful when the variable is linear. If there's a nonlinear relationship, the Spearman rank correlation isn't a helpful piece of information. That's why it's important to look at the histograms.
+
+Finally, I'm going to take the bins and make them nominal. This creates as many variables as there are levels of all the variables. For this dataset, I used four bins for each variable, so I ended up with four variables for each original variable (e.g. bpm.1, bpm.2, bpm.3, bpm.4). As stated in the introduction, each observation (audio file/song) has one and only one '1' for each of the original variables, corresponding to the bin (quartile) in which the value for that observation fell. 
+
+```{r , echo = FALSE}
+#create new dataframe to move data into and a one to move the sample sizes into
+
+mfbin <- data.frame(matrix(nrow = 1000, ncol = 28))
+row.names(mfbin) <- row.names(mfdata)
+colnames(mfbin) <- colnames(mfdata)
+
+
+ntab <- data.frame(matrix(nrow = 28, ncol = 5))
+rownames(ntab) <- colnames(mfdata)
+colnames(ntab) <- c("Bin 1", "Bin 2", "Bin 3", "Bin 4", "Spearman")
+
+#For loop to bin data and assign to columns in new matrix
+
+for (i in 1:28){
+  mfbin[,i] <- BinQuant(mfdata[,i], stem = '')
+  ntab[i,1:4] <- table(mfbin[,i])  
+  }
+
+# Used this next lines a test to make sure that the data were being binned accurately
+#rmsetest <- BinQuant(mfdata$rmse, stem = '')
+
+# Test how well the new data set correlates with the original dataset. 
+# Add the Spearman correlations to the column of the matrix that was not used by the loop above
+
+for (i in 1:28){ntab[i,5] <- cor(as.numeric(mfdata[,i]), as.numeric(mfbin[,i]), method = "spearman")}
+
+#Make data nominal - disjuctly coded 1s and 0s for MCA 
+
+mfnom <- makeNominalData(mfbin)
+
+```
+
+
+#### Distributions Table
+
+The table we get from the output below shows us what the ranges of each of the bins are, how many of each variable are binned in each bin, and how accurately these bins align with the original data. Below are the first six variables. In a perfect world, we'd see 250 observations in each variable, which we very nearly do. Things won't always be this neat.
+
+```{r , echo = FALSE}
+distmat <- data.frame(matrix(nrow = 5, ncol = 28))
+colnames(distmat) <- colnames(mfdata)
+row.names(distmat) <- c("Minimum", "Cutpoint 1", "Cutpoint 2",  "Cutpoint 3", 'Maximum')
+
+for (i in 1:28){distmat[1:5, i] <- quantile(mfdata[,i])}
+
+distmat <- rbind(distmat, t(ntab))
+pandist <- pander(distmat[ ,1:6])
+```
+
+### Processed Data Visualization: Heat Map
+There are two heatmaps below that show us the what our data looks like post-binning. The first shows us what variables look like by genre (group means) and the second shows us what each of the individual observations look like. One thing that we can take away from these maps, above and beyond how the data is distributed, is how the groups seem to really highlight the differences between the groups by smoothing out the variation within the groups. There are some pretty clear distinctions between genres and between spectral markers, although some of the spectral markers do seem to be moving in blocks. There are clear differences between the 600 and 700 groups, which are the rows of metal and pop. Likewise, MFCCs are very clearly alternating high and low values by odds and evens.
+```{r, echo = TRUE, fig.show = 'hold', fig.height=6, out.height="49%", fig.align='center'}
+mfbin4heatmap <- lapply(mfbin, as.numeric)
+gm4hm <- getMeans(mfbin4heatmap, music.genre)
+# Sets layout parameters for the heatmap
+lmat = rbind(c(0,3,0),c(2,1,0),c(0,4,0))
+lwid = c(.5,3,.5)
+lhei = c(1,4,1.5)
+# Heatmap for group means
+mfbinheatmap <- heatmap.2(as.matrix(data.frame(lapply(gm4hm, as.numeric))), 
+                        Rowv = NA, Colv = NA, 
+                       dendrogram = 'none', trace = 'none', 
+                       lmat = lmat, lhei = lhei, lwid = lwid,
+                        main = "Heatmap for Binned Variables, by Genre", 
+                       labRow = unique(music.genre))
+# Heatmap for individual observations
+mfbinheatmap.m <- heatmap.2(as.matrix(data.frame(lapply(mfbin4heatmap, as.numeric))),
+                          Rowv = NA, Colv = NA,  dendrogram = 'none', trace = 'none', 
+                          lmat = lmat, lhei = lhei, lwid = lwid, 
+                          main = "Heatmap for Binned Variables")
+```
+
+### Phi^2^ & Burt Table
+
+The next step for DiCA is just like [MCA](#MCA), we compute a Burt table, which is computed by multiplying our nominal (complete disjunct) table by its transpose to get a contingency table. For this we use the function `phi2mat4BurtTable` from the `data4PCCAR` package. The function gives us two outputs: the phi^2^ matrix and the Burt table. The Burt table is a contingency table for all of our nominalized variables, and the phi^2^ table shows us the squared correlation between the variables. We can then visualize this using correlation plots. The plot below below shows the phi^2^ (left) correlation.
+
+```{r echo = TRUE, fig.show = 'hold', out.width='50%', fig.align = 'center'}
+# Pseudo Heat Map ----
+corrMatBurt.list <- phi2Mat4BurtTable(mfnom, make_data_nominal = FALSE)
+
+corr4MCA <- corrplot.mixed(as.matrix(corrMatBurt.list$phi2.mat),
+                           lower.col = "black", tl.cex = .5,
+                           title = "Phi2: (squared) Correlation Map for MCA", 
+                           addCoefasPercent = TRUE, number.cex = .5)
+                           
+```
+
+```{r echo = FALSE}
+#_____________________________________________________________________
+# Pseudo Heat Map. Correlation ----
+# We need correlation to compare with PCA
+# Where the plot created by the code above is the squared correlations, the plot created here is simply phi, not phi^2, and thus represents the correlation, not the squared correlation. This is not necessary for the MCA per se, but it allows us to more easily compare the results from here to our PCA.
+#corr4MCA.r <- corrplot.mixed(as.matrix(corrMatBurt.list$phi2.mat^(1/2)),# to get correlations
+#                             title = "Phi: Correlation Map for MCA", 
+#                       addCoefasPercent = TRUE, order = "FPC",
+#                       lower.col = "black",# Add coefficient of correlation
+#                       tl.cex = .5,#Text label color and rotation
+#                       number.cex = .5,
+#                       # needed to have the color of variables correct
+#                      )
+#_____________________________________________________________________
+```
+
+### Correlation Plots
+
+The standard correlation plot below shows the correlations visually (top) and numerically (bottom). The variables are ordered according to their loadings on the first component. This makes sense given our results from the PCA, namely that the even MFCCs greater than 2 load positively on the first component and the odd MFCCs greater than 1 load negatively on the first component. It makes sense that these are opposed to one another as they are intentionally decorrelated. Likewise, the variables that load more heavily on the second component (or, in the case of b and bpm, the 3rd or 4th component) are more central in the plot.
+
+```{r echo = TRUE, out.width = '50%', fig.show = 'hold', fig.align="center"}
+mfcor <- cor(mfdata)
+
+corrplot(mfcor, diag = F, type = "upper", method = "ellipse", 
+         tl.cex = .5, tl.pos = "n") %>%
+corrplot(mfcor, add = TRUE, diag = F, type = "lower", 
+         method = "number", addCoefasPercent = T, 
+         col = "grey", tl.cex = .5, number.cex = .5, tl.pos = "ld")
+
+```
+
+
+## Analysis
+
+The code below shows us the DiCA and the DiCA inference batteries, respectively.
+
+```{r, echo = TRUE}
+mfdica <- TExPosition::tepDICA(mfnom, 
+                               make_data_nominal = FALSE, 
+                               DESIGN = music.genre, 
+                               graphs = FALSE)
+
+```
+
+```{r, echo = TRUE, message=FALSE, warning=FALSE}
+mfdica.inf <- TInPosition::tepDICA.inference.battery(DATA = mfnom, 
+                                                     make_data_nominal = FALSE,
+                                DESIGN = music.genre, make_design_nominal = TRUE,
+                                graphs =  FALSE # TRUE first pass only
+                                )
+```
+
+## Results
+
+### Scree Plot
+
+The scree plot shows us which of the eigenvalues/dimensions of variance extracted are significant. The dimensions here (9) are one less than the number of groups. The *p* values associated with the eigenvalues show us which values (via permutation testing in `tepDICA.inference.battery`) are significant. We have 9 out of 9 significant dimensions of variance extracted. The Kaiser criterion shows us that the average value for the eigenvalues is approximately 11, but that based on permutation testing, each of the eigenvalues for the data are significant, even though they fall below that average. The plots below, titled "Permutation Test for Eigenvalue" show how far removed from the random distribution the first two observed values are. More on reading scree plots and their permutations can be found [here](#InfPCA)
+
+```{r, echo = TRUE, fig.align="center", out.height='40%'}
+PlotScree(ev = mfdica$TExPosition.Data$eigs,
+          p.ev = mfdica.inf$Inference.Data$components$p.vals,
+          plotKaiser = TRUE)
+```
+
+```{r, out.width = '48%', out.height= '48%', fig.show = 'hold', ncol = 2}
+
+zeDim = 1
+pH1I <- prettyHist(
+  distribution = mfdica.inf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mfdica.inf$Inference.Data$components$eigs[zeDim], 
+           xlim = c(0, .23), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE,
+           cutoffs = c( 0.975))
+zeDim = 2
+pH2I <- prettyHist(
+  distribution = mfdica.inf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mfdica.inf$Inference.Data$components$eigs[zeDim], 
+           xlim = c(0, .18), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+```
+
+
+### Factor Maps
+
+Next we need to visualize all of our data on the principal components space. The first thing we're going to do is visualize all of our observations, including their means and confidence intervals for their means as we have done before. This will help us to understand how the observations map onto the variables and what patterns we can discern from that. If you've seen the cookbooks on [PCA](#PCA), [Inference PCA](#InfPCA), and [CA](#CA), this should look familiar, but binning has made some slight changes to the appearance of our plots. 
+
+```{r, echo = TRUE, fig.height = 6, out.width='60%', fig.align='center'}
+# Create a factor map for the individual observations
+mf.Imap <- createFactorMap(title = 'DiCA: Group Centers with CI and Observations',
+                           mfdica$TExPosition.Data$fii,
+                           col.points = mfdica$Plotting.Data$fii.col,
+                           display.labels = F,
+                           alpha.points = .1)
+# This helps us clean up the group names by replacing the punctuation in the rownames 
+# with nothing, hence the "". The effect is the deletion of the punctuation.
+rownames(mfdica$TExPosition.Data$fi) <- sub("[[:punct:]]","",
+                                            rownames(mfdica$TExPosition.Data$fi))
+# Create a factor map for the group means of observations
+mf.gmap <- createFactorMap(mfdica$TExPosition.Data$fi,
+                           col.points = mfdica$Plotting.Data$fi.col,
+                           distplay.labels = T,
+                           pch = 17,
+                           alpha.points = .5, 
+                           cex = 5)
+# Create labels
+label4Map <- createxyLabels.gen(1,2,
+                    lambda = mfdica$TExPosition.Data$eigs,
+                    tau = mfdica$TExPosition.Data$t)
+# Put together the observations map, the labels, the group means, 
+#       and the labels for the group means
+a002.Map.I <- mf.Imap$zeMap + label4Map + mf.gmap$zeMap_dots + mf.gmap$zeMap_text
+# Create confidence intervals for the group means (from the PTCA4CATA Package)
+GraphElli <- MakeCIEllipses(
+            mfdica.inf$Inference.Data$boot.data$fi.boot.data$boots[,c(1,2),],
+                            col = unique(mfdica$Plotting.Data$fi.col), 
+                            p.level = .95)
+# Puts together the group means map, the CI ellipses, and the labels for the axes
+# Note that because you're using the mf.gmap map, you don't get points for
+# the individual observations.
+a003.Map.gm <- mf.gmap$zeMap + GraphElli + label4Map
+# Puts together the everything from a002, plus the ci ellipses 
+a004.dica.ci <- a002.Map.I + GraphElli
+a004.dica.ci
+```
+
+#### Tolerance Intervals
+
+The tolerance intervals surround all of the datapoints in the data. They show you explicitly what the boundaries of the distributions of your data are. This is useful especially in this example and in [BADA](#BADA) for comparing to our group barycenters. If the dispersion is wide and the group mean CI is tight, then it's likely that the tightness of that confidence interval is due to the size of the data, the number of observations. That's the case in this example, where we have the observations for these groups pretty consistently overlapped, even though the means and confidence intervals are not. That suggests that we may have issues in differentiating between groups.
+
+```{r echo = TRUE, fig.height = 6, out.width='60%', fig.align='center'}
+# Gets values for the observations
+Fii <- mfdica$TExPosition.Data$fii
+# Adds 'Dimension' to each column of the observations
+colnames(Fii) <- paste0('Dimension ', 1:ncol(Fii))
+# Pulls the colors for the hulls from the fii plotting data
+col4Hull <- unique(mfdica$Plotting.Data$fii.col)
+GraphHull <- PTCA4CATA::MakeToleranceIntervals(
+                                 mfdica.inf$Fixed.Data$TExPosition.Data$fii,
+                                 design = as.factor(music.genre),
+                                 col = col4Hull,
+                                 # the next line is required 
+                                 # for some strange unknown reasons
+                                 names.of.factors =  c("Dim1","Dim2"),
+                                 p.level = 1.00,
+                                 alpha.ellipse = .05)
+# Puts all of the group dots on the map with labels and hulls
+a006.dica.withHull <-  mf.Imap$zeMap_background + label4Map + 
+                       mf.gmap$zeMap_dots + mf.gmap$zeMap_text +
+                       GraphHull + ggtitle('DiCA: Group Centers with Hulls')
+a006.dica.withHull
+```
+
+
+### Disjunct Factor Maps
+
+These factor maps show us how the observations map onto the factor space. Because we're using disjunctively coded data, we can also see what levels of those variables map onto which areas of the factor space. There are four maps below, each of which show certain variables. The first map shows all of the variables, the second shows just the variables that load significantly on the first dimension, the third shows the variables that load significantly on the second dimension, and the fourth shows the variables that don't load significantly on either one of those variables. I did this by specifying which of the rows of `mfMCA$ExPosition.Data$fj` I wanted to display on each graph. I selected them after looking at the contribution plots (below) to see which variables contributed what to which dimensions.
+
+These are plotted with the group mean CI's to give an idea of how the variables and the observations are related.
+
+First we pull set up the colors and make the original map.
+
+```{r , echo = TRUE, fig.height = 8, fig.width = 8, fig.show = 'hold', out.width="60%", fig.align="center"}
+col4Var <- c('orange','orange4','red','red4')
+# Levels
+col4Levels <- coloringLevels(rownames(mfdica$TExPosition.Data$fj), col4Var)   
+# To save typing, we soft-code the axes we want so we can change it 
+# for all of the plots at once if we want to look at other dimensions
+axis1 = 1
+axis2 = 2
+# Assign the FJs
+Fj.all <- mfdica$TExPosition.Data$fj
+#Creates the Map 
+BaseMap.Fj.all <- createFactorMap(X = Fj.all, axis1 = axis1, axis2 = axis2,
+                               title = 'DiCA Variables', 
+                               col.points = col4Levels$color4Levels, 
+                               cex = 1, text.cex = 2.5, force = 2,
+                               col.labels = col4Levels$color4Levels, 
+                               ) 
+#Assigns all the map parts 
+b001.BaseMap.Fj.all <- BaseMap.Fj.all$zeMap + label4Map 
+#Assigns the map so that there are no dots for the binned variables factor scores
+b002.BaseMapNoDot.Fj.all  <- BaseMap.Fj.all$zeMap_background +
+                             BaseMap.Fj.all$zeMap_text + label4Map + GraphElli
+# creates the lines for the DiCA 
+# notice we're using the same code as we did for MCA 
+lines4J.all <- addLines4MCA(Fj.all, col4Var = col4Var, size = .75)
+# Adds the lines to the plots with mean CIs and without, respectively
+b003.MapJ.allwm <-  b001.BaseMap.Fj.all + lines4J.all  + GraphElli
+b003.MapJ.all <-  b001.BaseMap.Fj.all + lines4J.all
+# Just calls the map with all the bits
+b003.MapJ.allwm
+```
+
+But this is incredibly busy, so we break it down by pulling the variables that load on each dimension and that don't load at all, which we've gotten from our loadings barplots below, and putting those each on separate plots. Note that for each of these plots, the constraints are assigned to be the same as the original (all variables) factor plot, so we can easily and intuitively compare the plots to one another.
+
+```{r echo = FALSE, fig.height = 12, fig.width = 12, fig.show = 'hold', out.width = "85%", fig.align='center'}
+# Assign the rows from the fjs from the analysis
+# corresponding to the binned variables we want to a value 
+# to make it easier (We'll need it a few times)
+ FJ.1s <- c(9:40, 45:48, 53:56, 61:64, 69:72, 77:80)
+ FJ.2s <- c(9:28, 33:52, 57:60, 65:68)
+ FJ.3s <- c(1:8, 73:76, 81:112)
+# Get the actual rows we selected above and assign their FJ values
+# to a value to use in the plots.
+Fj.1 <- mfdica$TExPosition.Data$fj[FJ.1s, ]
+Fj.2 <- mfdica$TExPosition.Data$fj[FJ.2s, ]
+Fj.3 <- mfdica$TExPosition.Data$fj[FJ.3s, ]
+# Map for the variables loading on the first dimension
+BaseMap.Fj.1 <- createFactorMap(X = Fj.1 , # resMCA$ExPosition.Data$fj,
+                               axis1 = axis1, 
+                               axis2 = axis2,
+                               title = 'Variables loading on D1', 
+                               col.points = col4Levels$color4Levels[FJ.1s], 
+                               cex = 1,
+                               col.labels = col4Levels$color4Levels[FJ.1s], 
+                               text.cex = 4,
+                               force = 2,
+                               constraints = BaseMap.Fj.all$constraints)
+# Map for the second dimension
+BaseMap.Fj.2 <- createFactorMap(X = Fj.2 , # resMCA$ExPosition.Data$fj,
+                               axis1 = axis1, 
+                               axis2 = axis2,
+                               title = 'Variables loading on D2', 
+                               col.points = col4Levels$color4Levels[FJ.2s], 
+                               cex = 1,
+                               col.labels = col4Levels$color4Levels[FJ.2s], 
+                               text.cex = 4,
+                               force = 2,
+                               constraints = BaseMap.Fj.all$constraints)
+# Map for the variables that don't load significantly.
+BaseMap.Fj.3 <- createFactorMap(X = Fj.3 , # resMCA$ExPosition.Data$fj,
+                               axis1 = axis1, 
+                               axis2 = axis2,
+                               title = 'NS Variables', 
+                               col.points = col4Levels$color4Levels[FJ.3s], 
+                               cex = 1,
+                               col.labels = col4Levels$color4Levels[FJ.3s], 
+                               text.cex = 4,
+                               force = 2,
+                               constraints = BaseMap.Fj.all$constraints)
+# Put the maps together, the way we did the first map. 
+b001.BaseMap.Fj.1 <- BaseMap.Fj.1$zeMap + label4Map 
+b002.BaseMapNoDot.Fj.1  <- BaseMap.Fj.1$zeMap_background +
+                                    BaseMap.Fj.1$zeMap_text + label4Map + GraphElli
+ 
+b001.BaseMap.Fj.2 <- BaseMap.Fj.2$zeMap + label4Map 
+b002.BaseMapNoDot.Fj.2  <- BaseMap.Fj.2$zeMap_background +
+                                    BaseMap.Fj.2$zeMap_text + label4Map + GraphElli
+ 
+b001.BaseMap.Fj.3 <- BaseMap.Fj.3$zeMap + label4Map 
+b002.BaseMapNoDot.Fj.3  <- BaseMap.Fj.3$zeMap_background +
+                                    BaseMap.Fj.3$zeMap_text + label4Map + GraphElli
+# Add all of our lines
+lines4J.1   <- addLines4MCA(Fj.1, col4Var = col4Var, size = .75)
+lines4J.2   <- addLines4MCA(Fj.2, col4Var = col4Var, size = .75)
+lines4J.3   <- addLines4MCA(Fj.3, col4Var = col4Var, size = .75)
+# Put everything together with the lines
+b003.MapJ.1wm <-  b001.BaseMap.Fj.1 + lines4J.1  + GraphElli
+b003.MapJ.1  <-  b001.BaseMap.Fj.1 + lines4J.1
+
+b003.MapJ.2wm <-  b001.BaseMap.Fj.2 + lines4J.2  + GraphElli
+b003.MapJ.2 <-  b001.BaseMap.Fj.2 + lines4J.2
+
+b003.MapJ.3wm <-  b001.BaseMap.Fj.3 + lines4J.3
+b003.MapJ.3 <-  b001.BaseMap.Fj.3 + lines4J.3
+
+grid.arrange(as.grob(b003.MapJ.all),
+             as.grob(b003.MapJ.1),
+             as.grob(b003.MapJ.2),
+             as.grob(b003.MapJ.3),
+             ncol = 2,nrow = 2,
+             top = text_grob("Factor Plots with Binned Variables", 
+                             size = 18, face = "bold"))
+```
+
+## Contributions
+
+The contributions are showing us simply how much each variable loads, irrespective of the sign of that loading. This is because for this type of analysis, we're actually going to break down how much each component loads with the binning we did above, and we see those in the bootstrap ratios. The variables that don't load significantly on either variable are Beats, BPM, and MFCCs 3, 16, 18, 19, and 20. Note that 16 is just shy of achieving significance on component 1. 
+
+The contributions for each dimension, as well as the bootstrap ratios for each of the disjunctively coded variables. The bootstrap ratios on top show us how much consistently each bin of each variable loads on each component, and in what direction. It's easy to see the differences between the spectral components and the MFCCs in this, with the MFCCs driving component 1 and spectral components loading on variable 2. You can also see if you look closely that most of the variables load in order - the first bin loads the most positively while the fourth bin loads most negatively (or vice versa) and the middle two bins fall somewhere in between. Sometimes they don't, which happens in the case where some variables load in a non-linear fashion. Beats and BPM are examples.
+
+The labels for each of the variables on the bottom plot are small, but visible if you zoom in. If you're looking at this on a webpage, open in a new tab and zoom in. If you're looking at a PDF, just zoom in.
+```{r, echo = TRUE}
+# contributions for variables, without their signs
+mfcont <- ctr4Variables(mfdica$TExPosition.Data$cj)
+# plot contributions of columns for component 1
+varCtr1 <- mfcont[,1]
+names(varCtr1) <-rownames(mfcont)
+ctrJ.1 <- PrettyBarPlot2(varCtr1,
+                         ylim =c(0, 1.2*max(varCtr1)),
+                         ylab = 'Contributions',
+                         font.size = 4,
+                         threshold = 1/ nrow(mfcont),
+                         color4bar = cfv, 
+                         angle.text = 45
+) + ggtitle("", subtitle = 'Variable Contributions: Dimension 1')
+
+# plot contributions of columns for component 2
+varCtr2 <- mfcont[,2]
+names(varCtr2) <- rownames(mfcont)
+ctrJ.2 <- PrettyBarPlot2(varCtr2,
+                         threshold = 1 / NROW(varCtr2),
+                         font.size = 4,
+                         color4bar = cfv, # we need hex code
+                         ylab = 'Contributions',
+                         ylim = c(0, 1.2*max(varCtr2)),
+                         angle.text = 45,
+) + ggtitle("", subtitle = 'Variable Contributions: Dimension 2')
+
+```
+
+```{r, echo = TRUE}
+BR.J <- mfdica.inf$Inference.Data$boot.data$fj.boot.data$tests$boot.ratios
+# Plot the bootstrap ratios for Dimension 1
+laDim = 1
+ba001.BR1 <- PrettyBarPlot2(BR.J[,laDim],
+                        threshold = 2,
+                        font.size = 1,
+                   color4bar = t(cfb), # we need hex code
+                  ylab = 'Bootstrap ratios', #sortValues = TRUE
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle(paste0('Component ', laDim), subtitle = 'Columns')
+
+# Plot the bootstrap ratios for Dimension 2
+laDim = 2
+ba002.BR2 <- PrettyBarPlot2(BR.J[,laDim],
+                        threshold = 2,
+                        font.size = 1,
+                   color4bar = t(cfb), # we need hex code
+                  ylab = 'Bootstrap ratios', #sortValues = TRUE
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle(paste0('Component ', laDim), subtitle = 'Columns')
+
+
+```
+
+```{r, echo = FALSE, fig.width=14, fig.height = 10}
+grid.arrange(
+    as.grob(ctrJ.1),as.grob(ctrJ.2),as.grob(ba001.BR1),as.grob(ba002.BR2),
+    ncol = 2,nrow = 2,
+    top = text_grob("Bootstrap ratios", size = 18, face = "bold")
+    )
+
+```
+
+## Model Evaluation
+
+The confusion matrices below evaluate how accurate the model is in assigning the observations to the a priori groups. On top is the fixed model, which has an accuracy of `r mfdica.inf$Inference.Data$loo.data$fixed.acc*100`%. On the bottom is the random effects (leave one out) model, which has an accuracy of `r mfdica.inf$Inference.Data$loo.data$loo.acc*100`%. This isn't great, but it's well above chance, which in this case is only 10% (100/10 groups). This is likely due to the fact that a) music genre identification is an incredibly complex task and b) looking at the group tolerance intervals, there's a whole lot of overlap between genres. 
+
+What sticks out to me here is how high the predicted observation values are for Country, Disco, Reggae, and Rock. Looking back at the factor map, we see that these genres are the ones with means that are closest to the barycenter, so it makes sense that the observations that cluster there are reflected in that. It's also remarkable how few Classical, Metal, and Pop tunes were accurately predicted. This makes sense in light of how far from the barycenter their means are relative to the other genres.   
+
+```{r }
+mfdicafixmat <- mfdica.inf$Inference.Data$loo.data$fixed.confuse
+mfdicafrowsums <- rowSums(mfdicafixmat)
+mfdicafixmat <- cbind(mfdicafixmat, mfdicafrowsums)
+
+mfdicaloomat <- mfdica.inf$Inference.Data$loo.data$loo.confuse
+mfdicarrowsums <- rowSums(mfdicaloomat)
+mfdicaloomat <- cbind(mfdicaloomat, mfdicarrowsums)
+
+mfdicafixtab <- kable(data.frame(mfdicafixmat),
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+mfdicalootab <- kable(mfdicaloomat,
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mfdicafixtab
+mfdicalootab
+```
+
+
+```{r , echo= FALSE} 
+# Save the graphics  ----
+#saving.pptx <-  saveGraph2pptx(file2Save.pptx = 'Class8-9_MCA', 
+#                               title = "The Iris Set as MCA" , 
+#                               addGraphNames = TRUE)
+```
+
+## Conclusions
+
+One thing DiCA manages to do is disentangle how the levels (bins) of each of the variables are reflected in each of the groups. To visualize this more effectively, we can look at the factor maps with the means of the groups plotted as well. 
+
+ *  **Component 1**  
+    +  This explains why the variables we saw before loaded the way they did: 
+    +  On the positive side, we have all of the variables driving the horizontal component, but on the negative side, the variables also seem to load a bit on the second component.
+    +  We can also see how the Odd MFCCs have lower values on the negative end of component 1 and higher values on the positive side, while even MFCCs have lower values on the positive side of component 1 and higher values on the positive end.
+ *  This does really help separate which of the genres tend to load in which way on these spectral components.
+
+
+ * **Component 2**  
+    + Component two really helps separate out how music recording techniques differ between genres. 
+    + The highest values of: spectral centroid, roll off, and spectral bandwidth are all more associated with pop than any other genre. 
+    + Likewise, the lowest values for every single component is more highly associated with classical than any other genre.
+    + We can see how many genres cluster in the middle, suggesting that there aren't too many differences in their recording techniques.
+    
+ * Interpretation: Although the interpretation for this dataset doesn't offer us any new information, it does look like it's telling us that this model (or at least this code) is more effective at discriminating between groups than our BADA model. Still not great, even though it's well above chance. 

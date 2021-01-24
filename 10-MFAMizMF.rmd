@@ -1,0 +1,394 @@
+# Multiple Factor Analysis {#MFA}
+
+```{r, include=FALSE}
+rm(list = ls())
+
+# libraries ----
+library(tidyverse)
+library(ExPosition)
+library(TExPosition)
+library(TInPosition)
+library(PTCA4CATA)
+library(data4PCCAR)
+library(corrplot)
+library(ggrepel)
+library(gridExtra)
+library(grid)
+library(ggplotify)
+library(kableExtra)
+library(knitr)
+library(gplots)
+suppressMessages(library(factoextra))
+suppressMessages(library(ggpubr))
+suppressMessages(library(data4PCCAR) )
+suppressMessages(library(PTCA4CATA))
+library(wesanderson)
+library(MExPosition)
+library(abind)
+library(pander)
+```
+
+## Intro to MFA
+
+MFA allows us to compute disjunct factor scores from multiple tables, or multiple blocks within a table, which describe various bits of information on a single set of observations.  Essentially it works by computing a [PCA](#PCA) on each of the matrices to get partial factor scores for each matrix, and then combining all of the tables to compute global factor scores for the observations, which we then plot, PCA style, using the principal components as axes. In this regard, it is very similar to STATIS, which is discussed in the previous chapter as the basis for [DiSTATIS](#DiSTATIS).
+
+The balancing done by the technique is called weighting, and the weights are distributed such that the variables that are closer to the barycenter are weighted more heavily than those that are further away. This has important implications for how we approach this specific dataset. Specifically, the weights are determined by scaling the tables such that their first singular values are equal to 1. To paraphrase Ju-Chi: "MFA normalization is equal rights. We don't ignore people because they're small". What this does is reduces the inertia of the table that has the most, whether that be because of a larger number of variables or otherwise, such that it is scaled to the same level as the table that has the least inertia. After the initial PCA, each original dataset is scaled such that each item in the table is normalized by a value equal to one divided by the first singular value of the table. This has the effect of scaling the singular values of each of the tables to one. This allows for a more effective, intuitive, and accurate comparison of data that otherwise would be unintelligible. 
+
+Check out [This article](https://personal.utdallas.edu/~herve/abdi-WiresCS-mfa-2013.pdf) [@Abdi2013] for more information on the details of MFA. 
+
+### Strengths & Weaknesses
+**Strengths**  
+  - Allows you to break down large data sets into constituent groups.  
+  - If you have groups of variables in a certain table that are related, not necessarily that measure the same thing, but things like personality variables or socioeconomic variables or education variables, you can see how those affect the observations as a whole.  
+  - If you have a group of variables or even a single variable that is driving the majority of the inertia, this allows you to scale the inertia of the various tables such that they are all comparable.  
+**Weaknesses**   
+  - Because of the inherent visual complexity of the factor maps, it may be necessary to look at the graphs in terms of group means, which may or may not be helpful or useful in terms of analysis. (That being said, it's possible that the plots with the partial factor scores will actually show linear trends (remember Sabina's plot).)  
+
+### Dos and Don'ts
+
+**Do:**  
+  - Make sure that the structure of your data make sense. If the variables for each of the tables aren't all describing the same observations, then an MFA won't make sense.  
+
+**Don't:**    
+  - Confuse the Rv matrix and the weighting.  The Rv Matrix is a measure of similarity between the individual matrices and the weights are determined by the first singular value of each matrix.  
+  - If you're going to analyze group means, don't calculate the group means from the original variables. Run the analysis first, then find the group means of the factor scores, to plot those. This preserves the original data and provides a more accurate result.  
+
+**Research Questions**  
+Questions for this technique should be guided by the fact that we're breaking down multiple tables, looking for differences between tables/datasets/matrices that contribute to our global/overall group analyses.  
+  - What can the disjunct factor scores tell us about what the principal components represent?  
+  - Can we identify trends based on how different groups of variables (or different tables/matrices, etc.) are plotting in the factor space?  
+  - Do the subtables vary systematically based on our divisions of information/variables?  
+  - Are there individual observations, variables, or tables, that are driving a disproportionate amount of the variance, and is there anything interesting about that?  
+
+
+## Data
+
+As stated above, for this technique we need multiple datasets. What we're going to do is going to be similar to PLSC. Instead of adding new data to what we have already, we're going to break up the Music Features dataset into 3 smaller matrices, with 9, 10, and 9 of the original variables in each, respectively. Additionally, because the plots below would have so much information as to be incomprehensible were we to use all 1000 observations for the factor scores plot, we're just going to take the average of each genre and use those 10 genres as our observations. However, it would be possible to do the analysis using the original set of 1000 observations. In fact, I recommend not doing what I've done here (running the analysis on the group means of each variable) unless you have a deep understanding of the fundamental structure of your dataset. A better option might be to run analyses on each of the groups, or to break the table by groups and select a different analysis. I've only done this as an exercise, and you can look back at some of the other analyses in this cookbook to see how these results line up with those.  
+
+To select which variables are going to be assigned to which matrices, I went back and looked at the [MCA](#MCA) and the [DiCA](#DiCA) techniques to see which variables loaded on which components systematically. These were then grouped into matrices to see if we could break down any of that original loading into smaller constituent parts.  
+
+  - For the first matrix, we're going to use the variables that have consistently loaded on the 1st component of these analyses: Spectral Bandwidth (spec_b), roll off (r_o), and MFCCs 4, 6, 8, 10, 11, 12, and 13.  
+  - For the second matrix, we're going to use the variables that have consistently loaded on the 2nd component of these analyses: Chroma (ch), RMSE, Spectral Centroid (spec_C), Zero Crossing Rate (zcr), and MFCCs 1, 2, 3, 5, 7, and 9.  
+  - For the third matrix, we're going to use the variables that have not consistently loaded on either component, or have had non-significant loadings. An interesting effect of MFA will allow the effect of these variables to be magnified relative to the others. BPM, Beats (b), and MFCCs 14 - 20, were assigned to a third matrix.  
+
+The three tables are shown below with three rows of observations from each table. The tables haven't been divided by observations also, I have just chosen to show different files in each table. Also, I've used different code to create these tables than the other ones. check out the rmd file for how we create these tables.
+
+```{r}
+# The data ----
+mfdata <- read.csv("data.csv", header = TRUE) #get data
+rownames(mfdata) <- mfdata[,1] #this and the next line takes the first column from the data as the row name and removes the name of the audio file as a variable
+mfdata <- mfdata[,c(2:30)]
+colnames(mfdata) <- c("bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl") #change column names to abbreviations for brevity's sake
+music.genre <- mfdata$lbl #makes 'genre' our design/grouping variable
+mfmat <- as.matrix(mfdata[,1:28]) #removes "genre" from table, and stores our dataframe as a matrix.
+mfdata <- mfdata[,1:28] #removes "genre" from dataframe.
+Xmat <- mfdata[, c(6,7, 12, 14, 16, 18:21)] #assigns our X matrix
+Ymat <- mfdata[, c(3:5, 8:11, 13, 15, 17)]  #assigns our Y matrix
+Zmat <- mfdata[, c(1,2,22:28)]              #assigns our Z matrix
+mfdatameans <- getMeans(mfdata, music.genre)
+mfmeansreo <- mfdatameans[,c(6,7, 12, 14, 16, 18:21, 3:5, 8:11, 13, 15, 17, 1,2,22:28)] #re-orders our original data table so we can visualize it
+mfdatareo <- mfdata[,c(6,7, 12, 14, 16, 18:21, 3:5, 8:11, 13, 15, 17, 1,2,22:28)] #re-orders our original data table so we can visualize it
+
+# These three tables are nice looking tables, but I couldn't figure out how to coerce them to stay together.
+mftablex <- kable(Xmat[c(1,101,201),], caption = "X matrix variables",
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mftabley <- kable(Ymat[c(301,401,501), ], caption = "Y matrix variables",
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mftablez <- kable(Zmat[c(601,701,801), ], caption = "Z matrix variables",
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+# So I used these, slightly less pretty tables, but was able to keep them together.
+grid.arrange(
+  tableGrob(round(Xmat[c(1,101,201), ], 2), theme = ttheme_default(base_size = 8)),
+  tableGrob(round(Ymat[c(301,401,501), ], 2), theme = ttheme_default(base_size = 8)),
+  tableGrob(round(Zmat[c(601,701,801), ], 2), theme = ttheme_default(base_size = 8)),
+  nrow = 3, ncol = 1
+            )
+
+```
+```{r}
+#mftablex
+#mftabley
+#mftablez
+```
+
+
+## Extra code we need
+The code below allows us to pull a number of colors from the spectrum whenever we need new colors. It's a super useful function, and is used twice below.
+
+```{r echo = TRUE}
+colfunc <- colorRampPalette(c("firebrick4","gold","forestgreen","darkblue"))
+```
+
+This function is a little shortcut that we need when we're making our multiple factor scores plot. If we don't have the dimensions of each of the tables named the same, ggplot kicks an error saying that it can't find the right thing.
+
+```{r echo = TRUE}
+renameCols <- function(x){
+   colnames(x) <- paste("Dimension", 1:ncol(x))
+   x
+}
+```
+
+## Data Visualization
+
+### Heatmap
+
+This heatmap shows us our heatmap of reordered data using the genre means for each variable. Gives us a good idea of structural contrast between the variables and observations. A couple of things worth noting: Metal and Pop genres seem to be incredibly different across the majority of our variables, and classical seems to also differ greatly from most genres. This is consistent with what we've up with all of the other analyses we've done so far.   
+
+```{r , fig.height  = 6, fig.align = "center", out.width = "75%"}
+lmat = rbind(c(0,3,0),c(2,1,0),c(0,4,0))
+lwid = c(.5,3,.5)
+lhei = c(1,4,1.5)
+gmheatmat <- heatmap.2(as.matrix(mfdatareo), scale = "column", 
+                       Rowv = NA, Colv = NA, 
+                       dendrogram = 'none', trace = 'none', 
+                       main = "Heatmap of the Means of Variables, by Genre",
+                       lmat = lmat, lhei = lhei, lwid = lwid)
+```
+
+### Correlation Plot
+
+The correlation plot below is again similar to those we've seen. This is useful for visualizing our data. If you've sen the other analysis, you'll notice that this one has the variables grouped by the matrix of which they are a part. We use `corrplot` like we've done before, check out the rmd file for the code.
+
+```{r , fig.align="center", out.width = "75%"}
+mfcor <- cor(mfdatareo)
+corrplot(mfcor, diag = F, type = "upper", method = "ellipse", tl.cex = .5, tl.pos = "n") %>%
+corrplot(mfcor, add = TRUE, diag = F, type = "lower", method = "number", addCoefasPercent = T, col = "grey", tl.cex = .5, number.cex = .5, tl.pos = "ld")
+```
+
+## Analysis
+
+The code below is the actual MFA (`mpMFA`). The code above the analysis sets up a matrix where the variables are the column names, so that it aligns with column names for `mfdatareo`. The single row of the matrix is then filled  "M1", "M2", and "M3" to indicate which matrix the variables belong to.  
+
+```{r echo = TRUE}
+mfagroups <- data.frame(matrix(nrow = 1, ncol = 28))
+row.names(mfagroups) <- "group"
+colnames(mfagroups) <- colnames(mfdata)
+mfagroups[, c(6,7, 12, 14, 16, 18:21)] <- "M1"
+mfagroups[, c(3:5, 8:11, 13, 15, 17)] <- "M2"
+mfagroups[, c(1,2,22:28)] <- "M3"
+mfaresults <- mpMFA(mfdatareo, mfagroups, 
+                    DESIGN = music.genre, graphs = FALSE)
+```
+
+## Results
+
+### Rv Matrix
+
+The Rv Matrix is the matrix of Rv values. The way we interpret the Rv coefficients it that it measures the level of similarity between two matrices. Although not technically (computationally) precise, we can view these values as the non-centered squared correlation coefficients. Each of the squares in the plot below approximates the shared variance between the two matrices for which the square in the matrix corresponds. Check out the code below for how we create this matrix.
+
+```{r out.width = "70%", echo = TRUE, fig.align='center'}
+matnames <- c("X Mat", "Y Mat", "Z Mat") # The matrix doesn't supply names
+# Check out what's in this next line to see how it creates the 
+RVmat <- mfaresults$mexPosition.Data$InnerProduct$RVMatrix 
+rownames(RVmat) <- matnames # These two lines assign the names of the matrices
+colnames(RVmat) <- matnames # To both rows and columns
+corrplot(RVmat, method = "color", addCoefasPercent = TRUE, 
+         tl.srt = 45, addCoef.col = "white") 
+```
+
+### Alphas
+
+The alphas are the values that reflect the weights for the compromise matrix. The alpha value for each matrix is the calculated as 1 divided by the square root of the first singular value of the matrix. Because we're giving more weight to the matrix with more average values, the Z Matrix, which consists of the variables that haven't significantly loaded on our first principal components yet, gets the most weight, while the other two matrices, which consist of the variables that have been loading significantly, are weighted less. 
+
+```{r out.width='50%', echo = TRUE, fig.align = 'center'}
+col4alphas <- colfunc(3)
+Eig.tab <- mfaresults$mexPosition.Data$Compromise$compromise.eigs
+Alpha <- as.data.frame(1/sqrt(Eig.tab))
+row.names(Alpha) <- matnames
+alphmat <- PrettyBarPlot2(Alpha, 
+                        threshold = 0,
+                        font.size = 3,
+                        color4bar =  col4alphas,
+                        main = "Alphas for Compromise Matrix",
+                        ylab = "Alphas",
+                        ylim = c(0, 1.2*max(Alpha)), 
+                        )
+alphmat
+```
+
+### Scree Plot
+
+The scree plot below shows us the eigenvalues, as before. The dimensionality of this data set is the minimum of the number of columns of any of the matrices included in the analysis (in this case, 9). Although the Kaiser criterion (the average value of the eigenvalues) cuts out the third dimension, it looks like there would be three clear dimensions that explain a large amount of variance using the "elbow test", so we'll just focus on those. No permutations this time, but as a reminder, that only tells us whether or not the values are significant, not whether or not they're interesting. See the chapter on [PCA](#PCA) for more on reading this plot.
+
+```{r out.width= '75%', fig.align= 'center'}
+
+Eig4scree <- mfaresults$mexPosition.Data$Table$eigs
+
+mfascree <- PlotScree(Eig4scree, plotKaiser = TRUE)
+
+```
+
+## Factor Scores Plots
+
+The code and descriptions for both the global and the partial factor scores maps are shown first, then the two plots are shown next to each other below.
+
+### Global Factor Scores Plots
+
+Factor scores plot! With this analysis, unlike previous analyses, we're only working with the group means for the variables, so we only have 10 total observations. Those are plotted on the principal components as we did for PCA. as you can see, the plot looks remarkably similar to the analyses we have done before, with pop, metal, and classical driving the first and second principal components. 
+
+Notice in the code for `createFactorMap`, we've specified the constraints manually. This is because if we don't, the constraints cut out some of the partial factor scores once we plot those. This might not happen every time, but if there are errors in the partial factor scores plot (# values omitted, missing information), it might be because they fall outside of the constraints specified here. There's also no way to specify constraints in the `createPartialFactorScoresMap` function, so we do it here.
+
+```{r echo = TRUE, fig.height = 6, out.height = '50%', fig.align='center'}
+fimeans <- getMeans(mfaresults$mexPosition.Data$Table$fi, music.genre)
+fimeans <- renameCols(fimeans)
+
+d1 <- getMeans(mfaresults$mexPosition.Data$Table$partial.fi.array[,,1], music.genre)
+d2 <- getMeans(mfaresults$mexPosition.Data$Table$partial.fi.array[,,2], music.genre)
+d3 <- getMeans(mfaresults$mexPosition.Data$Table$partial.fi.array[,,3], music.genre)
+
+pfi4pfs <- abind(d1, d2, d3, along = 3)
+pfi4pfs <- renameCols(pfi4pfs)
+
+rownames(pfi4pfs) <- unique(music.genre)
+dimnames(pfi4pfs)[[3]] <- c("M1", "M2", "M3")
+
+MFA_FMap <- createFactorMap(fimeans,
+                            col.points = unique(mfaresults$Plotting.Data$fi.col),
+                            col.labels = unique(mfaresults$Plotting.Data$fi.col),
+                            alpha.points = .6, pch = 17, cex = 5,
+                            display.labels = TRUE, 
+                            constraints = minmaxHelper4Partial(
+                                              FactorScores = fimeans,
+                                              partialFactorScores = pfi4pfs)
+                           )
+label4Map <- createxyLabels.gen(1,2,
+                                lambda = mfaresults$mexPosition.Data$Table$eigs,
+                                tau = mfaresults$mexPosition.Data$Table$t,
+                                axisName = "Dimension ")
+
+a003.mfa <- MFA_FMap$zeMap + label4Map
+```
+
+### Partial Factor Scores Plot
+
+Here we have the partial factor scores map. it shows us where each of the tables for each of the variables falls on the map and how they relate to the global factor scores we plotted in the previous plot. 
+
+In order to get this to work, you need to make sure that all of the dimensions of each of the matrices all match, otherwise ggplot will kick an error telling you it can't find which dimension you're trying to specify. So get around that, we use the function `renameCols` from above and assign the data to other variables to make our code for our partial factor scores map a little cleaner. Also, notice that we're using the `createPartialFactorScoresMap` instead of the `createFactorMap` that we've used for the rest of these analyses. 
+
+```{r echo = TRUE, fig.height=8, out.height = '50%'}
+
+map4PFS <- createPartialFactorScoresMap(
+                          factorScores = fimeans, # renamed in previous chunk
+                          partialFactorScores = pfi4pfs,
+                          axis1 = 1, axis2 = 2,
+                          colors4Items = unique(mfaresults$Plotting.Data$fi.col),
+                          names4Partial = c("Xmat", "Ymat", "Zmat"),
+                          font.labels = 'bold'
+                                        )
+partialfsmap <- MFA_FMap$zeMap + label4Map + 
+                map4PFS$linesColByItems + map4PFS$pointsColByItems + 
+                map4PFS$labelsColByItems
+
+```
+```{r out.width = '100%'}
+grid.arrange(as.grob(a003.mfa),
+             as.grob(partialfsmap), nrow = 1, ncol = 2)
+```
+## Loadings & Contributions
+
+### Loadings
+
+Here are the loadings for each of the variables. The MFA Normalization process seems to have adjusted how much each of these variables loads relative to one another. Before, for example in [PCA](#PCA), we saw that a few of the variables drove the majority of the loadings, and the variables loaded almost all the way to the edge of the correlation circle. In the case below, check out the constraints of the graph. Besides b and bpm, thanks to MFA normalization the variables have balanced out a little bit, with no one variable positioned that much further from the barycenter of the graph.
+```{r echo = TRUE}
+load.vars <- mfaresults$mexPosition.Data$Table$Q
+col4cols <- colfunc(28)
+loading.plot <- createFactorMap(load.vars, 
+                                col.points = col4cols,
+                                col.labels = col4cols,
+                                )
+LoadingMap <- loading.plot$zeMap + 
+              addArrows(load.vars, color = col4cols) + 
+              label4Map
+LoadingMap
+```
+
+
+### Contributions 
+The contributions below show us how much each of the variables and each of the genres contribute to each of the dimensions. For the genres it's pretty obvious which genres load on which dimension, we can see from the factor scores plot. As per the factor scores plot, metal, pop, and classical drives the first dimension, and pop and classical, and to a lesser extent, blues and hip-hop drive the second dimension. The rest of the genres don't seem to load significantly on either dimension. 
+
+Looking at the contributions for the variables, it looks like we've finally brought out something from the higher MFCCs, but also we're looking at them loading on the same dimension. Note that this specific plot doesn't account for the sign of the loadings, and are simply presented by their magnitude.
+
+Like the previous chapters of this book, the code for the first plot is shown, check out the rmd file for the rest of the plots, including the arrangement code.
+
+```{r, echo = TRUE}
+# These first two lines get us colors for our observation contributions
+col4ci <- colfunc(1000) # For the individual observations
+col4cim <- colfunc(10) # For the group means
+colconts1 <- PrettyBarPlot2(
+                          bootratio = mfaresults$mexPosition.Data$Table$cj[,1], 
+                          threshold = 1 / NROW(mfaresults$mexPosition.Data$Table$cj),
+                          font.size = 3,
+                          color4bar = col4cols, # we need hex code
+                          main = 'Component 1: Variable Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(mfaresults$mexPosition.Data$Table$cj[,1]))
+                          )
+```
+```{r, fig.width= 12, fig.height=8}
+colconts2 <- PrettyBarPlot2(
+                          mfaresults$mexPosition.Data$Table$cj[,2], 
+                          threshold = 1 / NROW(mfaresults$mexPosition.Data$Table$cj),
+                          font.size = 3,
+                          color4bar = col4cols, # we need hex code
+                          main = 'Component 2: Variable Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(mfaresults$mexPosition.Data$Table$cj[,2]))
+                          )
+rowconts1 <- PrettyBarPlot2(
+                          mfaresults$mexPosition.Data$Table$ci[,1], 
+                          threshold = 1 / NROW(mfaresults$mexPosition.Data$Table$ci),
+                          font.size = .1,
+                          color4bar = col4ci, # we need hex code
+                          main = 'Component 1: Observation Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(mfaresults$mexPosition.Data$Table$ci[,1])), plotnames = FALSE
+                          )
+rowconts2 <- PrettyBarPlot2(
+                          mfaresults$mexPosition.Data$Table$ci[,2], 
+                          threshold = 1 / NROW(mfaresults$mexPosition.Data$Table$ci),
+                          font.size = .1,
+                          color4bar = col4ci, # we need hex code
+                          main = 'Component 2: Observation Contributions',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(mfaresults$mexPosition.Data$Table$ci[,2])), plotnames = FALSE
+                          )
+contIs <- getMeans(mfaresults$mexPosition.Data$Table$ci[,c(1,2)], music.genre)
+rowcontm1 <- PrettyBarPlot2(
+                          t(contIs)[1,], 
+                          threshold = 1 / NROW(mfaresults$mexPosition.Data$Table$ci),
+                          font.size = 3,
+                          color4bar = col4cim, # we need hex code
+                          main = 'Component 1: Observation Contributions, by Group',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(mfaresults$mexPosition.Data$Table$ci[,1]))
+                          )
+rowcontm2 <- PrettyBarPlot2(
+                          t(contIs)[2,], 
+                          threshold = 1 / NROW(mfaresults$mexPosition.Data$Table$ci),
+                          font.size = 3,
+                          color4bar = col4cim, # we need hex code
+                          main = 'Component 2: Observation Contributions, by Group',
+                          ylab = 'Contributions',
+                          ylim = c(0, 1.2*max(mfaresults$mexPosition.Data$Table$ci[,2]))
+                          )
+
+grid.arrange(as.grob(colconts1), as.grob(colconts2), 
+             as.grob(rowconts1), as.grob(rowconts2),
+             as.grob(rowcontm1), as.grob(rowcontm2),
+             ncol=2, top = text_grob("Contribution barplots", size = 14, face = "bold"))
+```
+
+### Conclusions
+
+There are a few interesting things that occur thanks to the MFA that we haven't seen before. It shows us, similarly to DiCA, how the groups of variables combine to create the factor scores we see for these observations. However, we can also see something that may have only been visible in the heatmap before. It definitely shows us which genres have more average spectral content. Contrasting disco with pop or classical is a great example. Where classical and pop have values from the three different groups of variables that are pulling them away from the center, all of disco's partial factor scores are pretty tight in on the barycenter. 
+
+Otherwise, our factor scores see some interesting effects. Where Spectral Bandwidth and Roll Off have been loading on dimension one (and dimension two to a certain extent), we're now seeing them only loading on dimension two. It looks like the only variables that are still insignificant are b, bpm, and MFCCs 3, 11, and 18. What we can learn from that is that those are likely the spectral components that are common to all of the genres and therefore don't contribute much to the dimensionality of the genre identification space.
+
+
+

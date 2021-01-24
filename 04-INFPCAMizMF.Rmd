@@ -1,0 +1,500 @@
+# Inferences for Principal Components Analysis {#InfPCA}
+
+```{r setup, include=FALSE}
+rm(list = ls())
+
+library(ExPosition)
+library(corrplot)
+library(ggplot2)
+library(PTCA4CATA)
+library(kableExtra)
+library(InPosition)
+library(wesanderson)
+library(gridExtra)
+library(ggplotify)
+library(grid)
+library(pander)
+suppressMessages(library(kableExtra))
+
+```
+
+## Intro to Inferences
+This is a recipe for Inferences for Principal Component Analysis. To understand this, you should have already read the chapter on [Principal Components Analysis](#PCA). Many of the topics presented here are the same, and thus are truncated to avoid redundancy. The analysis is run on a dataset of spectral decomposition of 1000 30-second samples of audio files, aimed at identifying the genre of a given audio file based on spectral components. The features were extracted using the  [libROSA](https://librosa.github.io/librosa/index.html) package from python. 
+
+The inference PCA is an extension of the PCA technique. For more information on the background for the technique, check out the introduction to [this recipe](#PCA). The extensions specifically are some inferential statistics methods: permutation tests for the eigenvalues and bootstrapping for the means of the groups and the contributions to the factors.  Permutation testing [@Berry2011] breaks the connection between the observations and the variables, permuting the data into different possible arrangements. The result is a measure of how likely the observed data are to arise due to a random effect. The comparison of the observed value of the eigenvalues to the permuted eigenvlaues tells us what the p-value is for these data. Bootstrapping [@Hesterberg2011] uses resampling with replacement, keeping the observations and their data intact. It does not test the significance of the data, but the stability of the observations. Bootstrapping will by definition cluster to the barycenter or barycenters of the data. It thus gives us a measure a) of how stable the  observations are, how likely they are to be generalizable to other observations, and thus whether or not we can make predictions based on the results and b) if there are any underlying deviations in the data distributions.  
+
+### Dos and Don'ts
+
+**Do:**  
+ - Remember that bootstrapping and permutation testing fundamentally test different things.  
+ 
+**Don't:**   
+ - Confuse the results of the bootstrapping tests and the permutation tests.  
+ 
+**Research Questions:**    
+The inferences techniques we're looking at here lend themselves to the specific questions of "What is real?", i.e. "What is different from chance?" and "What is important", i.e. "What is stable, reproducible, generalizable?". As such, those should be guiding principles in formulating our research questions.  
+ - Are the results that we saw regarding variance explained by certain factors by the PCA significant?  
+ - How consistent or stable are any of these factors?  
+ - How would we expect other types of music to compare to the types here?  
+ - If we were to add other genres to this analysis, how would those generalize?  
+
+## Data
+``` {r echo = FALSE}
+mfdata <- read.csv("data.csv")
+rownames(mfdata) <- c(as.character(mfdata$filename))
+colnames(mfdata) <- c("f.n.", "bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", 
+                          "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", 
+                          "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl")
+mf.genre <- mfdata$lbl
+mfdata <- mfdata[ ,-c(1,30)]
+```
+
+The dataset for this analysis is the same as the one used for [PCA](#PCA). Check there for more info. Below is a table to give you an idea of each of the variables. In the interest of saving space, only the first 3 MFCC's are shown. In the analyses to follow, the names of the MFCC's >2 have been shortened to just their numeral (i.e. MFCC3 = 3).
+
+```{r, echo = FALSE}
+mfhead <- kable(mfdata[c(1,101,201,301,401), 2:11],
+                format = "latex", booktabs = TRUE) %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mfhead
+```
+
+
+### Correlation Matrix
+
+In order to get an idea of what the data look like overall, we run a correlation analysis `cor()` and plot it using [corrplot](https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html).   
+
+```{r echo = TRUE, out.width = '60%', fig.show = 'hold', fig.align="center"}
+cor.res <- cor(mfdata)
+corrplot(cor.res, diag = F, type = "upper", method = "ellipse", 
+         order = "FPC", tl.cex = .5, tl.pos = "n") %>%
+corrplot(cor.res, add = TRUE, diag = F, type = "lower", method = "number", 
+         addCoefasPercent = T, order = "FPC", col = "grey", 
+         tl.cex = .5, number.cex = .5, tl.pos = "ld")
+# cor.plot.r <- recordPlot() 
+# If you want to save to a powerpoint later, uncomment this. 
+# It records whatever plot is in the current r device.
+```
+
+**Reading this plot:**  
+ - This is a correlation plot showing us how the variables correlate with each other.  
+ - There are other options for ordering the variables, using the parameter `order`. They include "FPC", which orders the variables they way they load on the first component, left to right. Explore these options for whichever makes the most sense for your data.  
+ - The two halves of the plot display the same information.  
+ - The top half uses color and shape to show the strength and direction of correlation.  
+ - The bottom half uses values between -100 and 100, using the parameter `addCoefasPercent`, to show the correlation coefficient between the variables.  
+
+*A couple of things to note:*  
+ - Tempo (bpm) and beats (b) are correlated with each other (they effectively measure the same thing) and basically with nothing else. This makes sense, as tempos are not unique to any given genre.  
+ - Many of the spectral elements (chroma, rmse) show a strong positive correlation with each other and a strong negative correlation with MFCC2.  
+ - The MFCC's seem to be measuring the same thing - odd and even MFCCs are anti-correlated, which makes sense since the actual creation of the MFCCs involves a de-correlation process, so that neighboring triangular windows capture different information.  
+ - That being said, MFCCs 1 and 2 seem to have a fairly strong negative correlation with each other, but they are approximately orthogonal to the other MFCCs.  
+
+## Analysis
+The code below runs our PCA and PCA inference battery. Technically, for an inference PCA all we need is the `epPCA.inference.battery`, as the results for that function include both fixed data results and inference results (for comparison, see the outputs below).  
+ - data is `mfdata` from above  
+ - `center = TRUE` centers all of the data in the datset  
+ - `scale = "SS1"` scales the data so that the sum of squares of the columns (variables) equals 1  
+ - `DESIGN` tells the PCA/INFPCA what the groups that it should analyze by are  
+ - `graphs = FALSE` suppresses the graph production so that the file will knit - we'll make our own graphs later  
+ - `test.iters = 1000` tells the inference battery to run 1000 iterations of the permuation test. We'll do the bootstrapping later.  
+  
+```{r echo = TRUE, message = FALSE, warning=FALSE}
+mf.pca <- epPCA(mfdata, center = TRUE, scale = "SS1", DESIGN = mf.genre, graphs = FALSE)
+mf.pcainf <- epPCA.inference.battery(mfdata, center = TRUE, scale = "SS1", 
+                                     DESIGN = mf.genre, graphs = FALSE, test.iters = 1000)
+```
+
+```{r echo = TRUE}
+mf.pca
+```
+
+`mf.pcainf$Fixed.Data` gives the same thing as `mf.pca`:
+
+```{r echo = TRUE}
+mf.pcainf$Fixed.Data
+```
+
+`mf.pcainf$Inference.Data` gives the inference results:
+
+```{r echo = TRUE}
+mf.pcainf$Inference.Data
+```
+
+## Results
+
+### Scree Plots
+
+**Reading this plot:**  
+A scree plot plots eigenvalues by how much information there is in each component. Each of the dots on the scree plot identifies a dimension from the factor space in which there is variance, there are up to *k* - 1 dimensions from which variance can be extracted, where *k* is the the lower of either the number of variables in your analysis or the number of observations (i.e. min(nrow(DATA), ncol(DATA))), but your analysis of the dataset should focus on only the ones that take up the majority of the variance. A good rule of thumb for this is to look at the eigenvalues that fall above the "elbow", excluding the dimensions that fall below the noise threshold. A good way to visualize this is to connect the dots (as is done in the plot) and draw a straight line that extends from the bottom right hand corner all the way across the graph, and the point at which the dots start to land above this line is the noise threshold.  
+On the plot below we see two other methods of determining the significance of each dimension. The first is the Kaiser criterion, where we look at the average of the eigenvalues, plotted as a horizontal line over the plot. This isn't a rule, by any means, but it does give us an idea of what dimensions are important. The second is the result of the permutation tests. The permutation tests tell us whether each of the eigenvalues fall within the most extreme 5% of values. Again, however, this doesn't tell us necessarily what eigenvalues are important, it just shows us what values are significant. It just so happens that in this case, the Kaiser criterion, the elbow test, and the permutation tests are showing us the same dimensionality. Probably a good clue that there are 5 dimensions of data in this set.  
+Bottom line is, scree plots give you an idea of the true dimensionality of your data. The first eigenvalue is in a sense an omnibus test, it shows us whether or not there is any information in the data that isn't just noise. Beyond that, just because there are 28 dimensions in this analysis doesn't mean that there are 28 dimensions worth looking at, it's up to the researcher/observer to determine how many levels we're going to investigate.
+
+```{r screeplot, echo = TRUE, fig.align="center", out.width='70%'}
+my.scree <- PlotScree(ev =  mf.pcainf$Fixed.Data$ExPosition.Data$eigs,
+                      p.ev = mf.pcainf$Inference.Data$components$p.vals, plotKaiser = T) 
+```
+
+
+### Testing the eigenvalues
+**Reading these plots:**
+What we do here is visualize the permutations tests. The plots below show how the eigenvalues of the permutations fall into bins and stack up, and then draws a red dotted line to split the top 5% and the bottom 95%. If our eigenvalues don't fall above the line, then our specific observations and the eigenvalues we've observed are nonsignificant. If we see that our observed eigenvalue for the first dimension falls above the line, we know that we're looking at something besides noise in the data, and we can determine how many dimensions we want to investigate. As you can see, the first and second dimensions fall pretty far above the significance line. The plots below show both where the eigenvalues fall in the distribution and the overall distribution.
+
+```{r out.width = '40%', fig.show='hold', ncols = 2, fig.align='center'}
+zeDim = 1
+pH1 <- prettyHist(
+  distribution = mf.pcainf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mf.pcainf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 12), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c( 0.975))
+#eigs1z <- recordPlot()
+pH1a <- prettyHist(
+  distribution = mf.pcainf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mf.pcainf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 2), # needs to be set by hand
+           breaks = 20,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c( 0.975))
+#eigs1 <- recordPlot()
+```
+
+The plots below show us the permutation test results for our other five "significant" eigenvalues. Each of the piles shows the permutations of the test in histogram form. The observed results for the second - fifth eigenvalues are `r round(mf.pcainf$Fixed.Data$ExPosition.Data$eigs[2], 3)`, `r round(mf.pcainf$Fixed.Data$ExPosition.Data$eigs[3], 3)`, `r round(mf.pcainf$Fixed.Data$ExPosition.Data$eigs[4], 3)`, and `r round(mf.pcainf$Fixed.Data$ExPosition.Data$eigs[5], 3)`, respectively. As above, the results fall far enough below the observed value and cluster tightly enough that it's hard to visualize both the histogram and the observed value in the same plot. The question yet remains as to whether those dimensions will be interperable. Looking above at the scree plot, we see that the 4th and 5th eigenvalues are extracting about 8% and 7% of the variance of the overall model, respectively.
+
+```{r echo = FALSE, out.width = '40%', fig.show='hold', ncols = 2, nrows = 2, fig.align = 'center'}
+
+zeDim = 2
+pH2 <- prettyHist(
+  distribution = mf.pcainf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mf.pcainf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 2), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+#eigs2z <- recordPlot()
+zeDim = 3
+pH3 <- prettyHist(
+  distribution = mf.pcainf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mf.pcainf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 2), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+#eigs2z <- recordPlot()
+zeDim = 4
+pH4 <- prettyHist(
+  distribution = mf.pcainf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mf.pcainf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 2), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+zeDim = 5
+pH4 <- prettyHist(
+  distribution = mf.pcainf$Inference.Data$components$eigs.perm[,zeDim], 
+           observed = mf.pcainf$Fixed.Data$ExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 2.5), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+
+
+```
+
+## Inferences
+```{r factorscores, echo = FALSE}
+#Note also that we've switched things up a bit with the colors here. There's a package called `wesanderson` ( [found here](https://github.com/karthik/wesanderson) ) that uses the colors from various Wes Anderson Films. For the column factor scores plot below, I've used colors from [Fantastic Mr. Fox](https://www.imdb.com/title/tt0432283/?ref_=nv_sr_1?ref_=nv_sr_1). 
+gp1 <- c(1,2)
+gp2 <- c(3:8)
+gp3 <- c(9,10)
+gp4 <- c(11:28)
+mf.pcainf$Fixed.Data$Plotting.Data$fj.col[gp1] <- wesanderson::wes_palettes$FantasticFox1[2]
+mf.pcainf$Fixed.Data$Plotting.Data$fj.col[gp2] <- wesanderson::wes_palettes$FantasticFox1[3]
+mf.pcainf$Fixed.Data$Plotting.Data$fj.col[gp3] <- wesanderson::wes_palettes$FantasticFox1[4]
+mf.pcainf$Fixed.Data$Plotting.Data$fj.col[gp4] <- wesanderson::wes_palettes$FantasticFox1[5]
+```
+
+
+### For the Observations
+
+Because this section builds on the plots that we created for [PCA][Principal Components Analysis], check there for the basic descriptions of the plots themselves. This section focuses on the inferential techniques for the plots.
+
+We have factor scores plots for the observations (rows) similar to those we had in PCA:
+
+```{r echo = TRUE, fig.show='hold', fig.align="center", fig.height = 6, out.width='65%'}
+# This is sample code showing how a factor map is created. 
+# Note that there are five sections: 
+# The first basically establishes all of the parameters for the factor scores plot. 
+# It allows you to plot of all data points in the factor space, 
+# using the first 2 eigenvectors as axes.
+mfinfpca.fi.plot <- createFactorMap(mf.pcainf$Fixed.Data$ExPosition.Data$fi,# factor scores
+                            title = "Music Data Row Factor Scores",# title of the plot
+                            axis1 = 1, axis2 = 2, # which component for x and y axes
+                            pch = 19, # the shape of the dots (google `pch`)
+                            cex = 2, # the size of the dots
+                            text.cex = 2.5, # the size of the text
+                            col.points = mf.pcainf$Fixed.Data$Plotting.Data$fi.col, 
+                            col.labels = mf.pcainf$Fixed.Data$Plotting.Data$fi.col, 
+                            display.labels = FALSE,
+                            alpha.points = .2
+                            )
+# The second creates axis labels for the plots
+mfinfpca.fi.labels <- createxyLabels.gen(1,2,
+                             lambda = mf.pcainf$Fixed.Data$ExPosition.Data$eigs, 
+                             tau = round(mf.pcainf$Fixed.Data$ExPosition.Data$t),
+                             axisName = "Component "
+                              )
+# The third gets the means of the groups so we can plot them
+mfinfpca.means <- getMeans(mf.pcainf$Fixed.Data$ExPosition.Data$fi, mf.genre)
+# The fourth creates the factor map for the means, so we can plot them on the same plot
+groupscolors <- unique(mf.pcainf$Fixed.Data$Plotting.Data$fi.col)
+mfinfpca.fi.meansplot <- createFactorMap(mfinfpca.means,
+                                 title = "Music Data Genre factor scores",
+                                 axis1 = 1, axis2 = 2,                          
+                                 pch = 17,
+                                 cex = 4,
+                                 text.cs = 2.5,
+                                 col.points = groupscolors,
+                                 alpha.points = 1,
+                                 display.labels = TRUE
+                                 )
+# The fifth creates the actual plot using the parameters defined by the above code.
+fp01.infpca <- mfinfpca.fi.plot$zeMap + mfinfpca.fi.meansplot$zeMap_dots + 
+                mfinfpca.fi.meansplot$zeMap_text + mfinfpca.fi.labels 
+fp01.infpca
+```
+
+**Tolerance intervals**
+
+Tolerance intervals basically outline the data by groups. On the left are the tolerance intervals plotted over the observations by group, but that's super busy, so I plotted the graph on the right using only the means and the outline. The code below creates the tolerance intervals with a 95% coverage rate (`p.level = .95`). The specific code used to put all of the parts of the graphs below together can be viewed in the RMD file. 
+
+```{r echo = TRUE}
+TIplot <- MakeToleranceIntervals(mf.pcainf$Fixed.Data$ExPosition.Data$fi,
+                            design = as.factor(mf.genre),
+                            # line below is needed
+                            names.of.factors =  c("Dim1","Dim2"), # needed 
+                            col = groupscolors, p.level = .95,
+                            line.size = .50, line.type = 1,
+                            alpha.ellipse = .05, alpha.line    = .8,
+                            )
+```
+
+```{r echo= FALSE, out.width="50%", fig.show='hold', ncols = 2}
+
+fi.WithMeanTI <- mfinfpca.fi.plot$zeMap  + mfinfpca.fi.meansplot$zeMap_dots + mfinfpca.fi.meansplot$zeMap_text + TIplot + mfinfpca.fi.labels
+fi.WithMeanTIMO <- mfinfpca.fi.plot$zeMap_background + mfinfpca.fi.labels + mfinfpca.fi.meansplot$zeMap_dots + mfinfpca.fi.meansplot$zeMap_text + TIplot
+
+fi.WithMeanTI
+fi.WithMeanTIMO
+```
+
+
+### Bootstrapping!
+
+Alright we're here. Let's talk about bootstrapping. Bootstrapping basically samples from the data to see if the group means are really what they say they are, or if they're actually different. So what happens here is that you take a predetermined number of samples (in this case we're taking 1000) from the data, each the same size as your original data (again, in this case, 1000), and calculate the group means each time, and then calculate confidence intervals from the 1000 samples to get an estimate of how consistent your data are. 
+
+Now, this doesn't just have to be done with the means. And to be clear, this isn't going to get you a "better" estimate of the mean. What it's going to do instead is give you an idea of how consistent and how accurate your data are, and it can help to expose underlying distribution issues in your data (i.e. if it's bimodal). 
+
+This is the actual boostrap procedure. Notice with the output below it specifies that the boot cube is a K x J x L brick of bootstrapped means. K is the number of groups, J is the number of variables, and L is the number of iterations. So in this case we have a 10 row by 28 column by 1000 page 3D matrix of means. The original group means are stored in the `$GroupMeans` table and the `$BootstrappedGroupMeans` is the means of groups from the BootCube. Because the dataset is so large, we're going to look at the first 2 pages of the bootcube.
+
+```{r boot_m}
+# Depend on the size of your data, this might take a while
+fi.boot <- Boot4Mean(mf.pcainf$Fixed.Data$ExPosition.Data$fi,
+                     design = mf.genre,
+                     niter = 1000)
+# Check what you have
+fi.boot
+# What is the cube? Check the first 4 tables
+colnames(fi.boot$BootCube) <- colnames(mfdata)
+fi.boot$BootCube[,1:4,1:2]
+
+```
+
+
+### Plotting the Bootstrap CIs
+
+**Reading this plot**</br>
+The bootstrapped confidence intervals give us a measure of consistency, represented by how tight around the group mean the ellipses fall. Small ellipses tell us any number of things, and it depends on the data. It could be, as we hope, that the intervals represent very clear, consistent group means based on the bootstrapping. However, it could also just be an effect of having a large dataset. Remember that bootstrapping samples the same number of samples from your data as are in the original set, so a large dataset will see a lot of bootstrapping.  
+The plot below shows us the original factor scores plot with the group means and confidence intervals plotted over them. Generally, seeing that there is no overlap between group means suggests that we have clear separation between our groups. Note also that a few of the group means (pop, metal, classical) are surrounded by their factor scores dots, whereas some (reggae, hip-hop, disco) are not sitting on top of their factor scores dots. This suggests that they have a more diverse distribution of observations. However, this is difficult to read, so...  
+Below we once again have two graphs. The first is the same factor scores graph we saw above, with the original group means superimposed and the confidence intervals for those group means surrounding them. Below that, once again for visibility's sake, I've removed the dots and instead plotted the tolerance intervals with the group means and their Bootstrapped CIs superimposed. Note that the CIs are pretty tight around the means. This can be a for a couple of reasons. Either the means are super consistent, which is entirely possible, or because you have a large sample size. The larger the sample size, the easier it will be to get a consistent mean. Likewise, if you have a dataset that is small but is consistent, you'll get tighter confidence intervals. Note also that the confidence intervals for these data assume similar shape to the underlying data distribution.  
+
+Note: When you plot your CIs, use the `p.level` parameter in `MakeCIEllipses` to adjust for multiple comparisons. A simple way to do that is to divide the standard *p* value of .05 by the number comparisons you need to make (in this case 45, resulting in a necessary *p* value of .001 (shown below)), or divide by the number of groups you have (in this case 10, resulting in a necessary *p* value of .005)
+
+```{r echo = TRUE, fig.show='hold', fig.align="center"}
+# Check other parameters you can change for this function
+bootCI4mean <- MakeCIEllipses(fi.boot$BootCube[,c(1:2),], # get the first two components
+                              col = unique(mf.pcainf$Fixed.Data$Plotting.Data$fi.col), 
+                              p.level = .999
+                              )
+fi.WithMeanCI <- mfinfpca.fi.plot$zeMap_background + bootCI4mean + 
+                 mfinfpca.fi.meansplot$zeMap_dots + 
+                 mfinfpca.fi.meansplot$zeMap_text + mfinfpca.fi.labels
+fi.WithMeanCI
+```
+
+We can plot the group mean bootstrapped CIs on top of the tolerance intervals. It's important to note, though, that plotting the means and CIs on top of the tolerance intervals doesn't show that there is a strange dispersion for some of the groups, that we can see by plotting the means and CIs on top of the get observation factor scores.  
+
+```{r echo = TRUE, fig.show='hold', fig.align="center"}
+fi.WithMeanCITI <- mfinfpca.fi.plot$zeMap_background + 
+                    bootCI4mean + mfinfpca.fi.meansplot$zeMap_dots + 
+                    mfinfpca.fi.meansplot$zeMap_text + 
+                    mfinfpca.fi.labels + TIplot
+fi.WithMeanCITI
+```
+
+### For the Variables
+
+Below is the factor scores plots for the variables (columns), which uses `mfpca.res$ExPosition.Data$fj` instead of `$fi`. We can also make a plot of the loadings of the variables, which shows us how much the variables load on the principal components, or how much variance each of the variables is contributing to the principal components. Here we changed the color of the arrows to make it easier to read the names of the variables: Notice here that the variables are colored by groups. The colors come from the `wesanderson` package [found here](https://github.com/karthik/wesanderson). These two plots are the same as in [PCA](#PCA), check there and the RMD file for more detailed descriptions.
+
+```{r echo = TRUE, out.width = "50%", fig.show='hold', ncols = 2}
+mfinfpca.fj.plot <- createFactorMap(mf.pcainf$Fixed.Data$ExPosition.Data$fj ,
+                            title = "Music Data Column Factor Scores", 
+                            axis1 = 1, axis2 = 2, # which component for x and y axes
+                            pch = 19, # the shape of the dots (google `pch`)
+                            cex = 3, # the size of the dots
+                            text.cex = 3, # the size of the text
+                            col.points = mf.pcainf$Fixed.Data$Plotting.Data$fj.col, 
+                            col.labels = mf.pcainf$Fixed.Data$Plotting.Data$fj.col,
+                            )
+
+fp02.infpca <- mfinfpca.fj.plot $zeMap + mfinfpca.fi.labels
+
+cor.loading <- cor(mfdata, mf.pcainf$Fixed.Data$ExPosition.Data$fi)
+colnames(cor.loading) <- rownames(cor.loading)
+loading.plot <- createFactorMap(cor.loading,
+                                constraints = list(minx = -1, miny = -1,
+                                                   maxx = 1, maxy = 1),
+                                col.points = mf.pcainf$Fixed.Data$Plotting.Data$fj.col
+                                )
+LoadingMapWithCircles <- loading.plot$zeMap + 
+                         addArrows(cor.loading, 
+                                   color = mf.pcainf$Fixed.Data$Plotting.Data$fj.col) + 
+                         addCircleOfCor() +
+                         xlab("Component 1") + ylab("Component 2")
+
+fp02.infpca
+LoadingMapWithCircles
+```
+
+### Bootstrap Ratios for columns
+Because we saw how to create the contribution barplots in [PCA](#PCA), the code for those plots isn't shown below. Instead we're focusing on the bootstrap ratios for those contributions, for the first dimension. There's more code in the RMD that creates the other plots.  
+**Reading this plot:**   
+The contributions tell us which of the variables load significantly on the first two principal components^[If you looked at [PCA](#PCA) before this and are wondering why the contributions look less here than there, it's because the limits are different. In that analysis, the limits were set based on only the first dimension, whereas here they are set based on the entire sample. In this, they are set based on the min and max of all the contributions, not just the first dimension], and the bootstrap ratios tell us how consistently the the variables load on those components, or how generalizable we would expect those variables to be for a different sample. As you can see, pretty much everything but spectral bandwidth (spec_b) consistently loads on component 1, and bpm, beats (b), and MFCC 6 are consistently loading to the same degree on component 2. This reflects what we see on the loading plots, too. MFCC 6 basically lays flat along component 2.
+
+```{r, echo = TRUE}
+
+# Plot the bootstrap ratios for Dimension 1
+BR <- mf.pcainf$Inference.Data$fj.boots$tests$boot.ratios
+laDim = 1
+ba001.BR1 <- PrettyBarPlot2(BR[,laDim],
+                        threshold = 2,
+                        font.size = 5,
+                   color4bar = mf.pcainf$Fixed.Data$Plotting.Data$fj.col,
+                  ylab = 'Bootstrap ratios', 
+                  line.col = "black"
+                  ) + ggtitle("Bootstrap ratios", subtitle = paste0('Component ', laDim))
+
+```
+
+```{r, echo = FALSE}
+signed.ctrJ <- mf.pcainf$Fixed.Data$ExPosition.Data$cj * sign(mf.pcainf$Fixed.Data$ExPosition.Data$fj)
+# plot contributions for component 1
+ctrJ.1 <- PrettyBarPlot2(signed.ctrJ[,1],
+                         threshold = 1 / NROW(signed.ctrJ),
+                         font.size = 5,
+                         color4bar = mf.pcainf$Fixed.Data$Plotting.Data$fj.col, # make sure this is hex code
+                         ylab = 'Contributions',
+                         ylim = c(1.2*min(signed.ctrJ), 1.2*max(signed.ctrJ))
+) + ggtitle("Contribution barplots", 
+            subtitle = 'Component 1: Variable Contributions (Signed)')
+
+# plot contributions for component 2
+ctrJ.2 <- PrettyBarPlot2(signed.ctrJ[,2],
+                         threshold = 1 / NROW(signed.ctrJ),
+                         font.size = 5,
+                         color4bar = gplots::col2hex(mf.pcainf$Fixed.Data$Plotting.Data$fj.col), # we need hex code
+                         ylab = 'Contributions',
+                         ylim = c(1.2*min(signed.ctrJ), 1.2*max(signed.ctrJ))
+) + ggtitle("",subtitle = 'Component 2: Variable Contributions (Signed)')
+
+
+
+
+# Plot the bootstrap ratios for Dimension 1
+ba001.BR1 <- PrettyBarPlot2(BR[,laDim],
+                        threshold = 2,
+                        font.size = 5,
+                   color4bar = gplots::col2hex(mf.pcainf$Fixed.Data$Plotting.Data$fj.col), # we need hex code
+                  ylab = 'Bootstrap ratios',
+                 line.col = "black"
+) + ggtitle("Bootstrap ratios", subtitle = paste0('Component ', laDim))
+
+# Plot the bootstrap ratios for Dimension 2
+laDim = 2
+ba002.BR2 <- PrettyBarPlot2(BR[,laDim],
+                        threshold = 2,
+                        font.size = 5,
+                   color4bar = gplots::col2hex(mf.pcainf$Fixed.Data$Plotting.Data$fj.col), # we need hex code
+                  ylab = 'Bootstrap ratios'
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle("",subtitle = paste0('Component ', laDim))
+
+```
+
+This arranges the plots:
+
+```{r, echo = T, fig.width = 15, fig.height = 8}
+  grid.arrange(
+    as.grob(ctrJ.1),
+    as.grob(ctrJ.2),
+    as.grob(ba001.BR1),
+    as.grob(ba002.BR2),
+    ncol = 2,nrow = 2,
+    top = text_grob("Barplots for variables", size = 18, face = "bold"))
+```
+
+```{r saveplot2ppt, include = FALSE}
+# Here we can save all figures to a PowerPoint
+# savedList <- saveGraph2pptx(file2Save.pptx = 'Inference_figs',
+#                            title = 'All Figures for inference', 
+#                            addGraphNames = TRUE)
+
+```
+
+
+## Conclusions
+ *  **General**
+    + First of all, based on the bootstrapped group means it looks like my data are both large and fairly consistent, and that for the most part, there are real significant differences between the group means.  
+    + The permutation testing shows us that the first few eigenvalues we extracted represent something of significance, not just noise.   
+ *  **Component 1**  
+    + The first principal component separates observations of Metal on one end and Pop and Classical on one end. 
+    + For variables, the first component separates odd and even [MFCCs](#MFCCs) greater than 2. Knowing what we know about these variables, it makes sense that odd and even are separated. 
+    + Interpretation: Although metal seems to have different spectral components from classical and pop, there must be another variable or set of variables that are separating classical from pop on the second dimension. This may be a measure of distortion, or 'cleanliness' of signal. Rock is also trending to that side of the component. Perhaps further analyses will clarify what the first component represents.
+ *  **Component 2**  
+    + The second principal component separates observations of Pop on one end and Classical on the other. 
+    + For variables, the second component separates MFCC 1 and the other named spectral componentes on one end and MFCC2 on the other. 
+ *  **Interpretation:** Because we see the electronically prouduced genres like pop and hip hop tending towards one end of the second principal component and acoustically recorded genres like classical, blues, and jazz, we can gather that the acoustically produced music has lower extreme spectral components than electronically produced music. 

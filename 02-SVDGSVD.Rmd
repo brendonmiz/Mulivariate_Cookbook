@@ -1,0 +1,22 @@
+# (PART\*) Part I: The Backbone {-}
+
+
+# SVD and GSVD {#SVD}
+
+```{r}
+rm(list = ls())
+```
+
+This is not intended as an exhaustive review of the process, but rather a basic conceptual breakdown allowing the reader to approach the topic. All of the information is from @Abdi2007a and @Abdi2010f. Consult those references for more information on this technique and its application to the analyses in this book.
+
+The analyses in this book are all based on linear and matrix algebra. The "backbone" of these multivariate analyses, specifically, is the Singular Value Decomposition (SVD) and the Generalized Singular Value Decomposition (GSVD). In each of these techniques, we perform eigen-decomposition of the data table or tables, viewed as a matrix or set of matrices [@Abdi2007a]. These techniques differ, among other ways, in how the constraints are placed on the decomposition. However, both techniques focus on the orthogonality of the dimensions of decomposition. 
+
+The eigen-decomposition of the matrix gives us three matrices. While it may seem counter-intuitive in that we are creating *more* matrices, these new matrices represent a dimensionality reduction and allow us to later visualize the information in a way that is more intuitive than the initial plot. Of the three matrices extracted, two are orthogonal and one is a diagonal matrix of singular values. Specifically, we decompose matrix **X** so: **X** = **P**${\Delta}$**Q**^T^. Here, the columns of the two orthogonal matrices, P and Q, are the left singular vectors of X and the right singular vectors of X, respectively. They can also be understood as the normalized eigenvectors of X * X^T^ and X^T^ * X, respectively. ${\Delta}$ is the diagonal matrix and represents the square roots of the eigenvalues of X * X^T^ and X^T^ * X. 
+
+For analyses that use the SVD, such as [PCA](#PCA), we put orthogonality constraints on the SVD: **X** = **P**${\Delta}$**Q**^T^, such that P^T^P = Q^T^Q = I^[where I is the identity matrix]. That is to say, the rows and columns of the original matrix are constrained to orthogonality. In analyses like [CA](#CA) that use a *generalized* singular value decomposition (GSVD), we add additional constraints using the masses and weights of the rows and the columns, respectively, such that P * M * P^T^ = Q * W * Q^T^ = I, where M is the masses of the rows and W is the weights of the columns. This will make more sense conceptually once you read those chapters. 
+
+Conceptually what is happening here is that we are extracting variance, in the form of eigenvalues. These can be tested for significance using permutation testing (more on that in the [Inference PCA](#InfPCA) chapter). Extracting this information has the effect of rotating the original plot of data such that the line representing the first eigenvalue becomes the X-axis, and by definition and virtue of orthogonality, the second eigenvalue becomes the Y-axis. This allows one to see what 'principal component', 'latent variable', or 'salience' is causing the majority of the variance of the data. These variables may or may not be explicitly indicated in the original data, and can give you better insight into what separates observations in a systematic manner.
+
+We also see how variables 'load' or drive the variance of the principal components. This can tell us what variables are positively correlated, which are negatively correlated, and which are unrelated, or orthogonal, to one another. Because we'll be looking at these graphically instead of numerically, it allows a more intuitive understanding of the relationships between the variables. As you'll see in the variable loadings maps later, the squared cosine of the angle between any two variables is the correlation coefficient of those variables.
+
+This solves one of the problems of traditional cartesian graphs, namely that plotting more than three variables against one another in a single graph is basically impossible to visualize and interpret, and interpreting only three is extremely difficult. This technique allows you to compare many variables simultaneously in a way that allows easy interpretation. However, it is not a replacement for traditional regression or ANOVA analyses, as the results of these analyses don't offer conclusive results. They instead show us how things are related in ways we may not have been able to see otherwise, and offer suggestions for future hypothesis testing. 

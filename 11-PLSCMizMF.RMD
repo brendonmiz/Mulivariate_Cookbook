@@ -1,0 +1,528 @@
+# Partial Least Squares Correlation {#PLSC}
+
+```{r, include=FALSE}
+
+rm(list = ls())
+# libraries ----
+library(tidyverse)
+library(ExPosition)
+#install.packages('TInPosition') # if needed
+library(TExPosition)
+library(TInPosition)
+library(PTCA4CATA)
+library(data4PCCAR)
+library(corrplot)
+library(ggrepel)
+library(gridExtra)
+library(grid)
+library(ggplotify)
+library(kableExtra)
+library(knitr)
+library(gplots)
+suppressMessages(library(factoextra))
+suppressMessages(library(ggpubr))
+suppressMessages(library(data4PCCAR) )
+suppressMessages(library(PTCA4CATA))
+library(wesanderson)
+
+```
+
+## Intro to PLSC
+
+This technique allows for the analysis of multiple separate data tables that contain distinct data. It's commonly used in brain imaging analysis using matrices of imaging data and matrices of behavioral, task, or other data. A full enumeration of the types and uses of PLS can be found in "Partial Least Squares (PLS) methods for neuroimaging: A tutorial and review" [@Krishnan2011]. Also check out @Abdi2013a and @Abdi2010a.  
+
+In this technique, we will be looking at covariance and correlation between the variables in the two tables, and we use the techniques to extract "latent variables" (instead of the "principal components" of the [PCA](#PCA) technique), and we look at the "saliences" of the variables (as opposed to "loadings").  
+
+The null hypothesis for the PLSC technique is that there is absolutely nothing that is similar between the two tables. One thing we know from experience, though, is that in a dataset large enough, you're going to find *something* that is similar, and therefore correlated. This has been shown a few times with people looking at just noise and finding significant eigenvalues to extract. This suggests that the technique is overpowered, so it's important to interpret the results of such an analysis carefully.  
+
+### Strengths & Weaknesses
+**Strengths**   
+  - Maximizing covariance makes this technique really good at extracting similarities between tables. That's what makes it so good for analyzing brain imaging and behavioral data. If there's a signal, PLSC will find it.  
+  - Another thing that makes it useful is the fact that it can handle datasets that are hundreds or thousands (or hundreds of thousands) of variables long. (Pancake data)  
+  - If you're dealing with a dataset where a single variable drives an entire dimension, it may make sense to break the dataset up as I've done here (MFCC2 is the culprit), so that the first dimension can extract that variance and the second dimension can explain a little more about the other variables.  
+**Weaknesses**   
+  - It may in fact be overpowered, so be careful when interpreting results.  
+  - No inherent predictive power. For that, use the sister technique, PLSR.  
+  
+### Dos and Don'ts
+**Do:**  
+  - Remember what the null hypothesis for PLSC is when analyzing the data and interpreting the factor plots.   
+  - Remember that the factor plots represent the maximum covariance extracted on the first two dimensions of both matrices, and what the variables are in each table that may be driving the plot.  
+
+**Don't:**    
+  - Get lost in the sauce. Just because something is important, doesn't mean it's significant.  
+
+**Research Questions**  
+Questions for this technique should focus on how the sets of variables are similar and different, and how they're distinguishing groups of observations along the latent variables. If you consider that this technique is commonly used for correlating brain imaging data and behavioral data, finding the proverbial needle in the haystack, that helps in terms of clarification.  
+
+## Data
+
+As stated above, for this technique we need two separate datasets. Instead of adding new data to what we have already, we're going to break up the Music Features dataset into 3 smaller matrices, with 9, 10, and 9 of the original variables in each, respectively.  
+
+  - For the X Matrix, we're going to use the following variables: Spectral Bandwidth (spec_b), roll off (r_o), and MFCCs 4, 6, 8, 10, 11, 12, and 13.  
+
+  - For the Y Matrix, we're going to use: Chroma (ch), RMSE, Spectral Centroid (spec_C), Zero Crossing Rate (zcr), and MFCCs 1, 2, 3, 5, 7, and 9.  
+
+  - The rest of the variables, BPM, Beats (b), and MFCCs 14 - 20, were assigned to a third matrix and not used for this analysis.  
+
+The tables below shows the X and Y matrix variables with 10 rows of observations, one from each genre represented in the dataset.  
+
+```{r}
+# The data ----
+mfdata <- read.csv("data.csv", header = TRUE) #get data
+rownames(mfdata) <- mfdata[,1] #this and the next line takes the first column from the data as the row name and removes the name of the audio file as a variable
+mfdata <- mfdata[,c(2:30)]
+colnames(mfdata) <- c("bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl") #change column names to abbreviations for brevity's sake
+
+music.genre <- mfdata$lbl #makes 'genre' our design/grouping variable
+mfmat <- as.matrix(mfdata[,1:28]) #removes "genre" from table, and stores our dataframe as a matrix.
+mfdata <- mfdata[,1:28] #removes "genre" from dataframe.
+
+Xmat <- mfdata[, c(6,7, 12, 14, 16, 18:21)] #assigns our X matrix
+Ymat <- mfdata[, c(3:5, 8:11, 13, 15, 17)]  #assigns our Y matrix
+Nmat <- mfdata[, c(1,2,22:28)]              #assigns our N matrix
+
+mfdatareo <- mfdata[,c(6,7, 12, 14, 16, 18:21, 3:5, 8:11, 13, 15, 17, 1,2,22:28)] #re-orders our original data table so we can visualize it
+
+
+mftablex <- kable(mfdatareo[c(1,101,201,301,401,501, 601, 701, 801, 901), c(1:9)],
+                format = "latex", booktabs = TRUE, caption = "X matrix") %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mftabley <- mftable <- kable(mfdatareo[c(1,101,201,301,401,501, 601, 701, 801, 901), c(10:19)],
+                format = "latex", booktabs = TRUE, caption = "Y matrix") %>%
+                kable_styling(latex_options =c("striped", "scale_down"))
+
+mftablex
+mftabley
+
+```
+
+## Data Visualization
+
+The plot below shows us the covariance of the data; the centered dot products of the rows and columns of matrices X and Y. We see some of the same patterns that we saw during previous analyses, namely that odd MFCCs are anti-correlated with even MFCCs, and correlated with other odd MFCCs, and vice versa for even MFCCs. We also see strong relationships between the spectral content and MFCCs 1 and 2, but weaker relationships between the spectral content and other MFCCs.
+
+
+```{r}
+# Compute the covariance matrix
+XY.cor <- cor(Xmat, Ymat)
+# Plot it with corrplot
+corrplot(XY.cor, method = "color", addCoefasPercent = TRUE) 
+```
+
+## Analysis
+
+The code below runs the actual analysis on the two matrices. Note that there are two data tables as inputs (X and Y), whereas in previous analyses ( [PCA](#PCA), [CA](#CA), [MCA](#MCA), [BADA](#BADA)), there was only one data table to be analyzed. We still have a design vector (music genre) that groups our observations for the analysis.
+
+```{r, echo = TRUE}
+pls.res <- tepPLS(Xmat,Ymat, DESIGN = music.genre, 
+                  make_design_nominal = TRUE, graphs = FALSE)
+resPerm4PLSC <- perm4PLSC(Xmat, # First Data matrix 
+                          Ymat, # Second Data matrix
+                          nIter = 1000) # How mny iterations
+resPerm4PLSC # to see what results we have
+```
+
+
+## Results
+
+### Scree Plot
+
+The plot below shows our eigenvalues for this analysis. Note that there are 9 dimensions, equal to the least number of variables in either matrix. The permutations tests show us that almost all of our eigenvalues are significant, but looking at the scree plot, it looks like it would be best to look at the eigenplane created by the first two eigenvalues. The permutation tests indicate that these two eigenvalues are definitely above the threshold of p = .05. See the chapter on [Inferences for PCA](#InfPCA) for more on reading scree plots and their permutations.
+
+```{r echo = TRUE, out.width='75%', fig.align='center'}
+PlotScree(ev = pls.res$TExPosition.Data$eigs,
+          p.ev = resPerm4PLSC$pEigenvalues, plotKaiser = TRUE,
+          title = 'PLSC Music Features: Inertia Scree Plot')
+```
+
+```{r echo = FALSE, out.width="40%", fig.show='hold', ncols = 2, fig.align='center'}
+
+zeDim = 1
+pH1I <- prettyHist(
+  distribution = resPerm4PLSC$permEigenvalues[,zeDim],
+           observed = pls.res$TExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 12), # needs to be set by hand
+           breaks = 5,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE,
+           cutoffs = c( 0.975))
+zeDim = 2
+pH2I <- prettyHist(
+  distribution = resPerm4PLSC$permEigenvalues[,zeDim],
+           observed = pls.res$TExPosition.Data$eigs[zeDim], 
+           xlim = c(0, 11), # needs to be set by hand
+           breaks = 1,
+           border = "white", 
+           main = paste0("Permutation Test for Eigenvalue ",zeDim),
+           xlab = paste0("Eigenvalue ",zeDim), 
+           ylab = "", 
+           counts = FALSE, 
+           cutoffs = c(0.975))
+```
+
+
+
+### Factor Plots
+
+In previous cookbook pages, the plots were organized slightly differently. All of the computations were done first, and then all of the factor maps were created. Here, we've done all of the calculations for each of the plots with the plot immediately after. First, though, we create the colors.
+
+
+```{r}
+# get colors for groups
+uniquecol <- unique(pls.res$Plotting.Data$fii.col)
+grpcol <- uniquecol
+rownames(grpcol) <- as.character(levels(music.genre))
+
+colorpalette <- c(wes_palettes$Moonrise3[1], wes_palettes$Zissou1[2], wes_palettes$Darjeeling1[5], wes_palettes$BottleRocket1[3], wes_palettes$BottleRocket2[2],
+                   wes_palettes$Zissou1[1], wes_palettes$Darjeeling2[2], wes_palettes$Rushmore1[4], wes_palettes$BottleRocket2[3], wes_palettes$Royal1[2],
+                   wes_palettes$Rushmore1[3], wes_palettes$Zissou1[5], wes_palettes$Chevalier1[1], wes_palettes$Darjeeling1[1], wes_palettes$Cavalcanti1[2],
+                   wes_palettes$FantasticFox1[1], wes_palettes$GrandBudapest1[4], wes_palettes$Darjeeling1[3], wes_palettes$Zissou1[3])
+cfp <- colorpalette[c(4, 5, 10, 12, 14, 16:19)]
+cfq <- colorpalette[c(1, 2, 3, 6, 7, 8, 9, 11, 13, 15)]
+```
+
+
+#### Factor Plot 1
+
+The first plot shows us the observations observed using the first latent variables of each table as the axes. Because of the technique we used above, extracting maximal covariance, these two axes are orthogonal.
+
+Because each of these latent variables is orthogonal, we see the observations appear along a diagonal. This plot includes the group means and the confidence intervals for those means as well, and we can see that the genres are effectively separated along the latent variables from both tables. The separation achieved by the LVs from either table works better than the separation along either axis alone.
+
+```{r, echo = TRUE, fig.width = 8, fig.height = 8, fig.show='hold', out.height = "50%", fig.align="center"}
+# First, given how CreateFactorMap works, you need to 
+# create a matrix with observations on the rows, and 
+# whatever you want to put as the x-axis in the first column, 
+# and whatever you want to put as the y-axis in the second column.
+
+# For the first plot, the first component of the latent variable of X 
+# is the x-axis, and the first component of the latent variable of Y is the y-axis
+latvar.1 <- cbind(pls.res$TExPosition.Data$lx[,1],pls.res$TExPosition.Data$ly[,1])
+colnames(latvar.1) <- c("Lx 1", "Ly 1")
+
+# compute means
+lv.1.group <- getMeans(latvar.1, music.genre)
+
+# get bootstrap intervals of groups
+lv.1.group.boot <- Boot4Mean(latvar.1, music.genre)
+colnames(lv.1.group.boot$BootCube) <- c("Lx 1", "Ly 1")
+
+#Next, we can start plotting:
+# Basic factor map
+plot.lv1 <- createFactorMap(latvar.1,
+                         col.points = pls.res$Plotting.Data$fii.col,
+                         col.labels = pls.res$Plotting.Data$fii.col,
+                         alpha.points = 0.1, 
+                         )
+# Factor Map of group means
+plot1.mean <- createFactorMap(lv.1.group,
+                              col.points = grpcol[rownames(lv.1.group),],
+                              col.labels = grpcol[rownames(lv.1.group),],
+                              cex = 4,
+                              pch = 17,
+                              alpha.points = 0.8, 
+                              text.cex = 5, force = 3)
+# Factor map for group confidence intervals
+# remember we only need the 1st and 2nd columns of each 
+# page of the bootcube
+plot1.meanCI <- MakeCIEllipses(lv.1.group.boot$BootCube[,c(1:2),],
+                              col = grpcol[rownames(lv.1.group.boot$BootCube),],
+                              names.of.factors = c("Lx 1", "Ly 1")
+                              )
+# Put together everything we want in a plot:
+plot1stlvs <- plot.lv1$zeMap_background + plot.lv1$zeMap_dots + 
+         plot1.mean$zeMap_dots + plot1.mean$zeMap_text + plot1.meanCI
+plot1stlvs
+```
+
+#### Factor Plot 2
+
+The second plot shows us the observations using the second latent variables of each table as the axes. Note that the plot retains the same overall diagonal shape, but the groups have rearranged. There is also greater dispersion than in the first factor plot.
+Also, the separation between genres appears more effectively on the second component of the Y matrix than the X matrix. Disco, rock, hip-hop and blues all group on the X2, as do reggae and country, and jazz and pop. Metal and classical drive the extremes of both X2 and Y2.
+
+```{r, echo = F, fig.width = 8, fig.height = 8, fig.show='hold', out.height = "50%", fig.align="center"}
+# We set up the matrix the same way that we did for the last plot,
+# we assign the 2nd column of the fis from each table (lx and ly)
+# to the first and second columns of a matrix.
+latvar.2 <- cbind(pls.res$TExPosition.Data$lx[,2],pls.res$TExPosition.Data$ly[,2])
+colnames(latvar.2) <- c("Lx 2", "Ly 2")
+
+# compute means
+lv.2.group <- getMeans(latvar.2, music.genre)
+
+# get bootstrap intervals of groups
+lv.2.group.boot <- Boot4Mean(latvar.2, music.genre)
+colnames(lv.2.group.boot$BootCube) <- c("Lx 2", "Ly 2")
+
+#Next, we plot:
+# The observation factor scores
+plot2.lv1 <- createFactorMap(latvar.2,
+                         col.points = pls.res$Plotting.Data$fii.col,
+                         col.labels = pls.res$Plotting.Data$fii.col,
+                         alpha.points = 0.1
+                         )
+# the group mean factor scores
+plot2.mean <- createFactorMap(lv.2.group,
+                              col.points = grpcol[rownames(lv.2.group),],
+                              col.labels = grpcol[rownames(lv.2.group),],
+                              cex = 4,
+                              pch = 17,
+                              alpha.points = 0.8, 
+                              text.cex = 5, force = 3)
+# The confidence intervals for the CIs
+# remember we only need the 1st and 2nd columns of each 
+# page of the bootcube
+plot2.meanCI <- MakeCIEllipses(lv.2.group.boot$BootCube[,c(1:2),], 
+                              col = grpcol[rownames(lv.2.group.boot$BootCube),],
+                              names.of.factors = c("Lx 2", "Ly 2")
+                              )
+# Put together everything we want in a plot
+plot2ndlvs <- plot2.lv1$zeMap_background + plot2.lv1$zeMap_dots + 
+              plot2.mean$zeMap_dots + plot2.mean$zeMap_text + plot2.meanCI
+plot2ndlvs
+```
+
+
+
+### Column Loadings
+
+The plots below shows us the column loadings of the first components of X and Y and the second components of X and Y, separated into their respective matrices and latent variables. Unlike our other column loadings plots, we're not creating the correlation circles here. We know which variables are going to load on which components because we've assigned them to load on those components. What we're seeing here is more about how much they load, and how much variance they contribute. These also represent how much variance is explained in each of the latent variable. The variables that extend further from the axis are more important for that set of latent variables. For this and all of the other barplots, all of the variables from table 1 are shown in reds and yellows, and all of the variables from table 2 are shown in blues and greens. The loadings are shown loading in the direction of the axis they represent: X variables load on the X axis and are shown horizontally, Y variables load on the Y axis and are shown here vertically.
+
+There are a couple of things to talk about here: 
+
+First of all, this definitely makes sense in terms of our factor plots. We see that the classical/pop separation on the plots of LV1 is really being driven by MFCC2 and the spec_b and roll-off spectral components. This is consistent with all of the other analyses we've done, if you're not sure what that means, go ahead and check out the PCA page. 
+
+Likewise the metal/classical separation is visible on the plots and loadings of LV2. Here we see the zero-crossing rate, MFCC1, and the even MFCCs greater than 2 driving the separation between Classical and Metal. We also now have the odd MFCCs greater than 1 loading positively, which helps to move pop up closer to classical on the second plot.
+
+Secondly, the loadings for the MFCCs all switch their sign for the load out on the second latent variable. This indicates that after partialing out the variance from the first component, we are able to see how the variables relate otherwise.
+
+
+```{r, fig.width = 12, fig.height = 6, fig.show='hold', message=F, warning=FALSE, out.width = "80%", fig.align='center'}
+# Assign the ps and qs to values to make this more efficient
+ps <- pls.res$TExPosition.Data$pdq$p
+qs <- pls.res$TExPosition.Data$pdq$q
+# create a barplot for the first component of table 1/lv 1
+loading1p <- PrettyBarPlot2(bootratio = round(100*ps[,1]), 
+                       threshold = NA, 
+                       ylim = NULL, 
+                       color4bar = cfp,
+                       color4ns = "gray75", 
+                       plotnames = TRUE, 
+                       main = 'Loadings for Matrix 1, LV1', 
+                       ylab = "Signed Loadings", 
+                       horizontal = FALSE, 
+                       font.size = 5
+                       )
+# create a barplot for the second component of table 1/lv 1  
+loading1q <- PrettyBarPlot2(bootratio = round(100*qs[,1]), 
+                       threshold = NA, 
+                       ylim = c(-70,70),
+                       color4bar = cfq,
+                       color4ns = "gray75", 
+                       plotnames = TRUE, 
+                       main = 'Loadings for Matrix 2, LV1', 
+                       ylab = "Signed Loadings",
+                       font.size = 5
+                       )  
+# create a barplot for the first component of table 2/lv 2
+loading2p <- PrettyBarPlot2(bootratio = round(100*ps[,2]), 
+                       threshold = NA, 
+                       ylim = NULL, 
+                       color4bar = cfp,
+                       color4ns = "gray75", 
+                       plotnames = TRUE, 
+                       main = 'Loadings for Matrix 1, LV2', 
+                       ylab = "Signed Loadings", 
+                       horizontal = FALSE, 
+                       font.size = 5
+                       )
+# create a barplot for the second component of table 2/lv 2
+loading2q <- PrettyBarPlot2(bootratio = round(100*qs[,2]), 
+                       threshold = NA, 
+                       ylim = c(-70,70),
+                       color4bar = cfq,
+                       color4ns = "gray75", 
+                       plotnames = TRUE, 
+                       main = 'Loadings for Matrix 2, LV2', 
+                       ylab = "Signed Loadings",
+                       font.size = 5
+                       )  
+#Arrange both of the loadings plots for the 1st lv into a single plot
+loads1 <- grid.arrange(
+                      as.grob(loading1p),
+                      as.grob(loading1q),
+                      ncol = 2,nrow = 1
+                      )
+#Arrange both of the loadings plots for the 2nd lv into a single plot
+loads2 <- grid.arrange(
+                      as.grob(loading2p),
+                      as.grob(loading2q),
+                      ncol = 2,nrow = 1
+                      )
+```
+
+### Contributions
+
+For PLSC, we also plot the contributions for both rows and columns. The plot below shows us the contributions for each matrix and dimension. These are the variables (columns) of each of the matrices that drive the variance for each of the latent variables for the matrices. The first is shown as an example, the rest and the means to arrange them are in the rmd file, see there for more.
+
+```{r, echo = TRUE}
+# Assign values for efficiency: cis & cjs are contributions, 
+# from the PLSC results
+ctri <- pls.res$TExPosition.Data$ci
+signed.ctri <- ctri * sign(pls.res$TExPosition.Data$fi)
+ctrj <- pls.res$TExPosition.Data$cj
+signed.ctrj <- ctrj * sign(pls.res$TExPosition.Data$fj)
+# Creates the plot
+c001.plotCtri.1 <- PrettyBarPlot2(bootratio = round(100*signed.ctri[,1]), 
+                                  threshold = 100 / nrow(signed.ctri), 
+                                  ylim = NULL, 
+                                  color4bar = cfp,
+                                  color4ns = "gray75", 
+                                  plotnames = TRUE, 
+                                  main = 'Contributions from Matrix 1, Dim 1.', 
+                                  ylab = "Signed Contributions")
+```
+
+```{r echo = F, fig.width = 12, fig.height = 6, fig.show='hold'}
+c002.plotCtrj.1 <- PrettyBarPlot2(bootratio = round(100*signed.ctrj[,1]), 
+                                  threshold = 100 / nrow(signed.ctrj), 
+                                  ylim = NULL, 
+                                  color4bar = cfq, 
+                                  color4ns = "gray75", 
+                                  plotnames = TRUE, 
+                                  main = 'Contributions from Matrix 2, Dim 1.', 
+                                  ylab = "Signed Contributions")
+
+c003.plotCtri.2 <- PrettyBarPlot2(bootratio = round(100*signed.ctri[,2]), 
+                                  threshold = 100 / nrow(signed.ctri), 
+                                  ylim = NULL, 
+                                  color4bar = cfp, 
+                                  color4ns = "gray75", 
+                                  plotnames = TRUE, 
+                                  main = 'Contributions from Matrix 1, Dim 2.', 
+                                  ylab = "Signed Contributions")
+
+
+c004.plotCtrj.2 <- PrettyBarPlot2(bootratio = round(100*signed.ctrj[,2]), 
+                                  threshold = 100 / nrow(signed.ctrj), 
+                                  ylim = NULL, 
+                                  color4bar = cfq, 
+                                  color4ns = "gray75", 
+                                  plotnames = TRUE, 
+                                  main = 'Contributions from Matrix 2, Dim 2.', 
+                                  ylab = "Signed Contributions")
+
+conts <- grid.arrange(
+                      as.grob(c001.plotCtri.1),
+                      as.grob(c002.plotCtrj.1),
+                      as.grob(c003.plotCtri.2),
+                      as.grob(c004.plotCtrj.2),
+                      ncol = 2,nrow = 2,
+                      top = text_grob("Variable Contributions", 
+                                      size = 18, face = 'bold')
+                      )
+
+```
+
+### Bootstrap Ratios
+
+The code below shows us how consistently the variables load the way they do on the latent variables. Note that most of the variables are pretty consistent, but some of the MFCCs are not consistent on the first component.
+
+Because PLSC is only good for predicting fixed effects (effectively, you're predicting what is in the dataset; PLSR is useful for predicting the random effects), we need a measure to help us figure out what might happen if we look at observations that are not in the dataset. So we look to bootstrapping to help us to understand how generalizable the PLSC variables are to random effects. Again, the code we use to create the first plot is below, check out the rmd file for the rest. Also see the chapter on [Inferences for PCA](#InfPCA) for more on bootstrapping and reading the plots.
+
+First we need to compute the bootstrap ratios, using `resBoot4PLSC`:
+
+```{r echo = TRUE}
+resBoot4PLSC <- Boot4PLSC(Xmat, # First Data matrix 
+                          Ymat, # Second Data matrix
+                          nIter = 1000, # How many iterations
+                      Fi = pls.res$TExPosition.Data$fi,
+                      Fj = pls.res$TExPosition.Data$fj,
+                      nf2keep = 3, critical.value = 2,
+                      # To be implemented later
+                      # has no effect currently
+                      alphaLevel = .05)
+print(resBoot4PLSC)
+```
+Then, we use those bootstrap ratios to create our barplots:
+```{r echo = TRUE}
+BR.I <- resBoot4PLSC$bootRatios.i
+BR.J <- resBoot4PLSC$bootRatios.j
+laDim = 1
+# Plot the bootstrap ratios for Dimension 1
+ba001.BR1.I <- PrettyBarPlot2(BR.I[,laDim],
+                        threshold = 2,
+                        font.size = 3,
+                   color4bar = cfp, # we need hex code
+                  ylab = 'Bootstrap ratios'
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle(paste0('Component ', laDim), subtitle = 'Table 1')
+```
+
+```{r, echo = FALSE, out.height = "35%", fig.align="center"}
+
+ba002.BR1.J <- PrettyBarPlot2(BR.J[,laDim],
+                        threshold = 2,
+                        font.size = 3,
+                   color4bar = cfq, # we need hex code
+                  ylab = 'Bootstrap ratios'
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle("", subtitle = 'Table 2')
+
+# Plot the bootstrap ratios for Dimension 2
+laDim = 2
+ba003.BR2.I <- PrettyBarPlot2(BR.I[,laDim],
+                        threshold = 2,
+                        font.size = 3,
+                   color4bar = cfp, # we need hex code
+                  ylab = 'Bootstrap ratios'
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle(paste0('Component ', laDim), subtitle = 'Table 1')
+
+ba004.BR2.J <- PrettyBarPlot2(BR.J[,laDim],
+                        threshold = 2,
+                        font.size = 3,
+                   color4bar = cfq, # we need hex code
+                  ylab = 'Bootstrap ratios'
+                  #ylim = c(1.2*min(BR[,laDim]), 1.2*max(BR[,laDim]))
+) + ggtitle("", subtitle = 'Table 2')
+
+#We then use the next line of code to put two figures side to side:
+
+grid.arrange(
+    as.grob(ba001.BR1.I),as.grob(ba002.BR1.J),as.grob(ba003.BR2.I),as.grob(ba004.BR2.J),
+    ncol = 2,nrow = 2,
+    top = text_grob("Bootstrap ratios", size = 18, face = 'bold')
+  )
+
+
+```
+
+
+
+
+## Summary
+
+ *  **From the latent variables:**
+
+    +  The first set of latent variables seem to be driving the Classical/Pop distinction we've seen throughout these analyses. They also do a good job of grouping by genre. Classical is on its own, Jazz & Blues are grouped together, with country overlapping with rock and close to blues. Metal is closest to rock, and disco, reggae, and hip-hop all are grouped together. Pop is on the opposite end of the plot from classical. These groupings make a lot of sense in terms of genre relations.
+
+    +  The second set of latent variables separate metal and classical. This moves pop much closer to classical, and seems to capture a different set of information than I think of when I think of genre separation. It seems to separate genres based on the actual shape of the signal one might see in a given genre.  
+
+ *  **From the scores of Table 1:**
+
+    +  Component 1: According to the bootstrap ratios, all of these measures except for MFCC 8, 10, and 12, seem to be generalizable to genre separation, even though the first component is driven primarily by bandwidth and roll-off, which, based on our previous analyses, are also likely correlated 
+
+    +  Component 2: MFCC’s 8, 10, 12, and 13 drive the variance here. Honorable mention to MFCC 11, which is almost significant in components 1 and 2.
+
+
+ *  **From the scores of Table 2:**
+
+    +  Component 1: As we've seen before, it's MFCC2 against everything else, with only spectral centroid, and MFCC’s 2, 7, and 9 driving the variance here.
+
+    +  Component 2: This seems to bring MFCC 2 into check, allows us to take a look at how it's related to the other variables. Chroma and MFCCs 1, 5, 7, and 9 are significant. The higher values of the MFCCs have flipped their sign for the bootstrap ratios.
+
+

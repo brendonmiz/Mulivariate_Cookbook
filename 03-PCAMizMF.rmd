@@ -1,0 +1,369 @@
+# (PART\*) Part II: Single Table Techniques {-}
+
+# Principal Components Analysis {#PCA}
+
+```{r include = FALSE}
+suppressMessages(library(tidyverse))
+suppressMessages(library(knitr))       
+suppressMessages(library(kableExtra))
+suppressMessages(library(corrplot))
+suppressMessages(library(ggplotify))   
+suppressMessages(library(ggpubr))      
+suppressMessages(library(grid))        
+suppressMessages(library(gridExtra)) 
+suppressMessages(library(PTCA4CATA))
+suppressMessages(library(ExPosition))
+suppressMessages(library(InPosition))
+library(pander)
+suppressMessages(library(kableExtra))
+```
+
+## Intro to PCA
+
+PCA (Principal Component Analysis) is a statistical technique used to analyze large datasets of multiple inter-correlated variables. It is the oldest and most commonly known and used multivariate analysis technique. It's fundamentally about dimensionality reduction and comparing variables, and is the most fundamental of the techniques presented in this cookbook. As such, many of the explanations found here are not repeated on other cookbook pages, which instead reference back here. PCA also helps us to analyze the relationships between variables visually as opposed to numerically, which helps us form more intuitive and informed responses to the results of such analyses.    
+
+It uses least squares regression modeling to extract latent orthogonal variables not explicitly included in the dataset. These new variables are called principal components. The first principal component is identified by minimizing the variance to the line of best fit. The second principal component is identified by maximizing the inertia, essentially maximizing the distance to a line orthogonal to the first component. Once the two principal components are identified, matrix rotations are used to establish new axes, and that all of the original observations are plotted onto the new "factor space".  
+
+The two dimensions of the original dataset (rows and columns) are viewed as observations and variables, respectively. The observations are plotted onto the factor space as "factor scores" and the variables are plotted onto the factor space as "loadings". The two identify similar information, but are interpreted differently. For a PCA, these two plots are separate.  
+
+Factor scores are interpreted as how extreme a given observation is in a given dimension of a factor, and the similarity between observations is determined by how close or distant they are in the factor space. Loadings indicate how much a given variable contributes to a dimension of information extracted by the PCA. Variables that lie further along the principal components contribute more to that dimension and observations closer to the barycenter ^[Center of Gravity; origin.] contribute less. The similarity or difference between two variables is determined by the angle between them, regardless of where they lie on the the factor space.^[The correlation between to variables is equal to the squared cosine of the angle between them. Angles approaching 0 or 180 degrees are highly correlated, those approaching 90 degrees are less so. Angles that are exactly 0 or 180 degrees have a correlation of 1 or -1, respectively, and angles that are exactly 90 are completely uncorrelated, or orthogonal.]  
+
+ > The distance from the origin is important in both maps, because squared distance from the mean is inertia (variance, information; see sum of squares as in ANOVA/regression). Because of the Pythagorean Theorem, the total information contributed by a data point (its squared distance to the origin) is also equal to the sum of its squared factor scores.  
+ - Michael Kriegsman
+
+All of the information in this chapter comes from lecture notes and @Abdi2010f, consult those for more detail on this technique.
+
+### Strengths & Weakness
+ **Strengths**  
+PCA is a great tool for analyzing quantitative data, and serves as a good basis for beginning investigations of that type. It's also fundamental to many of the other analyses presented in this cookbook, so understanding the plots are vital to understanding the other analyses.  
+**Weaknesses**  
+It is limited in that it doesn't handle qualitative data, and it doesn't allow for easy comparison of variables and observations. Also, because of the nature of the analysis, all we're really doing is looking at what is really in the data, and therefore the results of a PCA are not easily generalizable. For those purposes we need to run bootstrapping and permutations tests on the PCA data. For more on bootstrapping and permutation testing, see @Hesterberg2011 and @Berry2011, respectively. These techniques are also discussed in more detail in the [Inference PCA](#InfPCA) chapter.
+
+### Dos and Don'ts
+
+**Do:**  
+ - Remember that this analysis is primarily about the variables. We are seeing in the factor plots how each of the observations relate to the variables, but we're looking at which variables are measuring what, how similar those measurements are, and how we can reduce the dimensionality of the data.  
+ - Be aware of the structure of your data. PCA requires that data be centered, but not necessarily scaled. If the data you are inputting are already centered, you don't need to re-center. That won't do anything. Whether you want to scale or not depends on your data. If you have data that are vastly different, i.e. age, income, likert scales, reaction time, all in the same dataset, you need to scale, so that they can be compared. If you only have one type of data, you can decide whether you want to scale based on the dataset.
+ - Make sure you understand your variables. If you don't have a comprehensive understanding of what the numbers mean in the original dataset, the analysis won't help.  
+ - Be open-minded about what the data reveal. You might be surprised.  
+ - Compare observation factor scores by distance.  
+ - Compare variable factor scores/loadings by correlation coefficient (Squared cosine).  
+ 
+**Don't:**  
+ - Try to compare factor scores for rows and columns (observations and variables) directly.  
+ - Forget about how orthogonality works.  
+ - Come into this analysis with preconceived notions of what the data are.  
+ - Make the mistake of "over-fitting"  
+
+**Research Questions:**  
+The PCA technique lends itself to research questions that get at underlying, "invisible" components that separate the observations. The specific questions should be guided by the data themselves. Sometimes, a PCA can offer insights into what other questions we should ask. For this specific analysis, some useful questions might be:  
+  - Do these audio files vary systematically?  
+  - Are the underlying variations in the data due to musical features, spectral features, or some combination of the two?  
+  - Are there significant, systematic spectral differences between genres of music, and if so, what are they?  
+  - We can also rephrase that to: Are there genre-specific signal markers that allow us to classify the files by genre?  
+  - Using what we know about music, can we make any guesses as to why these variations occur?  
+
+## Data
+
+``` {r echo = TRUE}
+mfdata <- read.csv("data.csv")
+rownames(mfdata) <- c(as.character(mfdata$filename))
+colnames(mfdata) <- c("f.n.", "bpm", "b", "ch", "rmse", "spec_c", "spec_b", "r_o", "zcr", 
+                      "mfcc1", "mfcc2", "3", "4", "5", "6", "7", "8", "9", "10", 
+                      "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "lbl")
+mf.genre <- mfdata$lbl
+mfdata <- mfdata[ ,-c(1,30)]
+```
+
+The dataset for this analysis is a dataset of spectral decomposition of 1000 30-second samples of audio files, aimed at identifying the genre of a given audio file based on spectral components [source](https://github.com/Insiyaa/Music-Tagging). The features were extracted using [libROSA](https://librosa.github.io/librosa/index.html). Each row (observation) is the libROSA output for the file identified in the row name. There are 1000 rows, with 100 files from each of 10 genres: Blues, Classical, Country, Disco, Hip hop, Jazz, Metal, Pop, Reggae and Rock. There are 28 numerical variables and one factor/design variable in the dataset:  
+
+  - tempo (bpm): measured in beats per minute, extracted by the software
+  - beats (b): number of beats included in the recording - how many beats appear in each 30 second file, based on the tempo determined in the decomposition.
+  - chroma (ch): a vector indicating the strength of representation of chroma (pitch class) in the audio file, averaged across both time and frequency domains.
+  - Root Mean Square Error (rmse): the root mean square of the signal; a measure of volume
+  - Spectral Centroid (spec_c): effectively a measure of timbre, measured in hertz
+  - spectral Bandwidth (spec_b): the width of the auditory spectrum in the file, also measured in hertz
+  - Roll-off (r_o): frequency point above which the file keeps less and less data, also measured in hertz
+  - Zero-Crossing Rate (zcr): how often the signal crosses the zero threshold, how busy the data are (often indicates speech or percussion instruments)
+  - 20 Mel-Frequency Cepstral Coefficients (mfcc1, mfcc2, 3, ...): measure of the strength of a given frequency spectrum across the time domain. More info [here](#MFCCs).
+  - Genre (lbl): the goal of the algorithm - identifying audio files by spectral content, used as our design variable.  
+ 
+```{r, echo = FALSE}
+
+mfhead <- kable(mfdata[c(1,101,201,301,401,501,601,701,801,901), 2:11],
+                format = "latex", booktabs = TRUE) %>%
+                #kableExtra::landscape() %>%
+                kable_styling(latex_options =c("striped", "scale_down"))%>%
+                footnote(general = "In this table, filename has been moved to the row names and is excluded from analyses. In the interest of saving space, only the first 3 MFCCs are shown. In the analyses to follow, the names of the MFCCs >2 have been shortened to just their numeral (i.e. MFCC3 = 3)", threeparttable = T)
+  
+mfhead
+
+```
+
+
+### Data Visualization: Correlation Plot
+
+In order to get an idea of what the data look like overall, we run a correlation analysis `cor()` and plot it using [corrplot](https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html).   
+
+
+```{r, echo = TRUE,  fig.show='hold'}
+cor.res.full <- cor(mfdata)
+corrplot(cor.res.full, diag = F, type = "upper", 
+         method = "ellipse", tl.cex = .5, tl.pos = "n") %>%
+  corrplot(cor.res.full, add = TRUE, diag = F, 
+           type = "lower", method = "number", 
+           addCoefasPercent = T, col = "grey", 
+           tl.cex = .5, number.cex = .5, tl.pos = "l")
+# If you want to record plots to a powerpoint, use recordPlot() to record whatever plot 
+# is active. Use the code at the end to save the plots.
+#cor.plot.f <- recordPlot() 
+```
+
+**Reading this plot:**  
+  - This is a correlation plot showing us how the variables correlate with each other.  
+  - There are other options for ordering the variables, using the parameter `order`. They include "FPC", which orders the variables they way they load on the first component, left to right. Explore these options for whichever makes the most sense for your data.  
+  - The two halves of the plot display the same information.  
+  - The top half uses color and shape to show the strength and direction of correlation.  
+  - The bottom half uses values between -100 and 100, using the parameter `addCoefasPercent`, to show the correlation coefficient between the variables.
+  
+*A couple of things to note:*  
+  - Tempo (bpm) and beats (b) are correlated with each other (they effectively measure the same thing) and basically with nothing else. This makes sense, as tempos are not unique to any given genre  
+  - Many of the spectral elements (chroma, rmse) show a strong positive correlation with each other and a strong negative correlation with MFCC2.  
+  - The MFCCs seem to be measuring the same thing - odd and even MFCCs are anti-correlated, which makes sense since the actual creation of the MFCCs involves a de-correlation process, so that neighboring triangular windows capture different information.  
+  - That being said, MFCCs 1 and 2 seem to have a fairly strong negative correlation with each other, but they are approximately orthogonal to the other MFCCs.  
+ 
+
+## Analysis
+
+```{r, echo = TRUE, message = FALSE, warning=FALSE}
+# This is the line of code that actually runs the PCA. 
+# The output from this is necessary for all of the other graphs and functions.
+mfpca.res <- epPCA(mfdata, center = TRUE, scale = "SS1", 
+                   DESIGN = mf.genre, graphs = FALSE)
+# This line runs both bootstraps and permutation tests on the data. 
+# Technically you could run only this line, 
+# as you get results for both fixed data and inference data.
+mfpca.inf.res <- epPCA.inference.battery(mfdata, center = TRUE, scale = "SS1", 
+                                         DESIGN = mf.genre, graphs = FALSE, 
+                                         test.iters = 1000)
+```
+
+
+## Results
+
+### Scree Plot  
+
+**Reading this plot:**  
+A scree plot plots eigenvalues by how much information there is in each component. Each of the dots on the scree plot identifies a dimension from the factor space in which there is variance, there are up to *k* - 1 dimensions from which variance can be extracted, where *k* is the the lower of either the number of variables in your analysis or the number of observations (i.e. min(nrow(DATA), ncol(DATA))), but your analysis of the dataset should focus on only the ones that take up the majority of the variance. A good rule of thumb for this is to look at the eigenvalues that fall above the "elbow", excluding the dimensions that fall below the noise threshold. A good way to visualize this is to connect the dots (as is done in the plot) and draw a straight line that extends from the bottom right hand corner all the way across the graph, and the point at which the dots start to land above this line is the noise threshold.
+On the plot below we see two other methods of determining the significance of each dimension. The first is the Kaiser criterion, where we look at the average of the eigenvalues, plotted as a horizontal line over the plot. This isn't a rule, by any means, but it does give us an idea of what dimensions are important. The second is the result of the permutation tests. The permutation tests tell us whether each of the eigenvalues fall within the most extreme 5% of values. Again, however, this doesn't tell us necessarily which eigenvalues are important, it just shows us what values are significant. It just so happens that in this case, the Kaiser criterion, the elbow test, and the permutation tests are showing us the same dimensionality. Probably a good clue that there are 5 dimensions of data worth looking at in this set.
+Bottom line is, scree plots give you two things: an idea of the true dimensionality of your data and a measure of the variance explained by the components. Remember that just because the numbers are small, doesn't mean that they can't be significant. The first eigenvalue is in a sense an omnibus test, it shows us whether or not there is any information in the data that isn't just noise. Beyond that, just because there are 28 dimensions in this analysis doesn't mean that there are 28 dimensions worth looking at, it's up to the researcher/observer to determine how many levels we're going to investigate.
+    
+    
+```{r scree plot, echo = TRUE}
+my.scree <- PlotScree(ev = mfpca.res$ExPosition.Data$eigs,
+                      plotKaiser = TRUE, 
+                      p.ev = mfpca.inf.res$Inference.Data$components$p.vals)
+```
+  
+
+### Row Factor scores
+
+
+```{r factor scores, echo = TRUE}
+###############################################################
+# This is just sample code showing how a factor map is created. 
+# For more information on this, check out the actual RMD file, 
+# there will be more chunks dedicated to creating the factor plots. 
+# This section of code generates the plots for the factor scores 
+# for the observations and calls a basic version. 
+# The next chunk actually calls them.
+###############################################################
+
+# Note that there are three sections: 
+# the first basically establishes all of the parameters for the factor scores plot. 
+# It allows you to plot of all data points in the factor space, 
+# using the first 2 eigenvectors as axes.
+
+mfpca.fi.plot <- createFactorMap(mfpca.res$ExPosition.Data$fi,# factor scores
+                            title = "Music Data row factor scores", # title of the plot
+                            axis1 = 1, axis2 = 2, # which component for x and y axes
+                            pch = 19, # the shape of the dots (google `pch`)
+                            cex = 2, # the size of the dots
+                            text.cex = 2.5, # the size of the text
+                            col.points = mfpca.res$Plotting.Data$fi.col, 
+                            col.labels = mfpca.res$Plotting.Data$fi.col, 
+                            display.labels = FALSE,
+                            alpha.points = .2
+                            )
+# The second creates axis labels for the plots
+mfpca.fi.labels <- createxyLabels.gen(1,2,
+                             lambda = mfpca.res$ExPosition.Data$eigs, 
+                             tau = round(mfpca.res$ExPosition.Data$t),
+                             axisName = "Component "
+                              )
+# The third creates the actual plot using the parameters defined by the above code.
+fp01.pca <- mfpca.fi.plot$zeMap + mfpca.fi.plot$zeMap_dots + 
+            mfpca.fi.plot$zeMap_text + mfpca.fi.labels 
+fp01.pca
+```
+
+Note that we've specified that the dots created in this plot should not have labels (`display.labels = FALSE`) for each observation. This is because with 1000 observations plotted closely on top of each other, it's impossible to read. Instead we make some adjustments and plot the group means on top of them.
+
+```{r,echo=FALSE, fig.height = 6}
+# This gets the means of the factor scores, by genre, and automatically 
+# assigns the names of the genres (from the design variable) to the rows.
+mfpca.means <- getMeans(mfpca.res$ExPosition.Data$fi, mf.genre) 
+mfpca.fi.plot <- createFactorMap(mfpca.res$ExPosition.Data$fi,# factor scores
+                            title = "Music Data row factor scores", # title of the plot
+                            axis1 = 1, axis2 = 2, # which component for x and y axes
+                            pch = 19, # the shape of the dots (google `pch`)
+                            cex = 2, # the size of the dots
+                            text.cex = 2.5, # the size of the text
+                            col.points = mfpca.res$Plotting.Data$fi.col, 
+                            # color of the dots
+                            col.labels = mfpca.res$Plotting.Data$fi.col, 
+                            # color for labels of dots
+                            display.labels = FALSE,
+                            alpha.points = .1
+                            )
+#create plot for means only
+mfpca.fi.meansplot <- createFactorMap(mfpca.means,
+                                 title = "Music Data Genre factor scores",
+                                 axis1 = 1, axis2 = 2,                          
+                                 pch = 17,
+                                 cex = 4,
+                                 text.cs = 2.5,
+                                 col.points = unique(mfpca.res$Plotting.Data$fi.col),
+                                 alpha.points = 1,
+                                 display.labels = TRUE
+                                 )
+# Note we don't specify that the labels should be the same color as the dots because they get lost in the plot.
+fp02.pca <- mfpca.fi.plot$zeMap + mfpca.fi.plot$zeMap_dots + 
+            mfpca.fi.labels + mfpca.fi.meansplot$zeMap_dots + 
+            mfpca.fi.meansplot$zeMap_text
+fp02.pca
+```
+
+**Reading this plot**  
+As we stated above, the factor scores show us how each of the observations are represented relative to the first two principal components. Literally, how each observation 'scores' on each principal component. Observations that are closer together are more related, observations that are further apart are less related. The principal components then also show us the separation between the groups. Principal component 1 is primarily distinguishing between the genres of metal and pop and classical, while principal component two separates our classical and pop genres. This interpretation comes from how far away from the barycenter (origin) these group means are. In order to figure out what variables are driving these separations between variables, we'll have to look at the loadings plot.  
+```{r, echo = TRUE}
+# This gets colors to use for the variables. 
+# ExPosition only gives us one color for the variables, but we need a total of 28 colors. 
+# colorRampPalette() inerpolates colors in between the ones that are listed
+colfunc <- colorRampPalette(c("firebrick4","gold","forestgreen","darkblue"))
+col4load <- colfunc(28)
+```
+
+### Column Factor Scores
+We can make similar plots for the column factor scores, using `mfpca.res$ExPosition.Data$fj` instead of `$fi`:
+
+```{r, echo = FALSE}
+# Factor Map
+mfpca.fj <- createFactorMap(mfpca.res$ExPosition.Data$fj, # data
+                            title = "Music Data Column Factor Scores", # title of the plot
+                            axis1 = 1, axis2 = 2, # which component for x and y axes
+                            pch = 19, # the shape of the dots (google `pch`)
+                            cex = 3, # the size of the dots
+                            text.cex = 3, # the size of the text
+                            col.points = col4load, # color of the dots
+                            col.labels = col4load, # color for labels of dots
+                            )
+lp01.pca <- mfpca.fj$zeMap + mfpca.fi.labels 
+lp01.pca
+```
+
+**Reading this plot:**  
+This plot represents the factor scores for each of the columns of the analysis. Similarly to the row factor scores plot, we see how the variables score on the dimensions plotted. Likewise we see what variables drive the components. Principal Component 1 differentiates the MFCCs greater than 2 from the MFCCs greater than 1, while principal component 2 differentiates the spectral components roll of, spectral bandwidth and spectral centroid from MFCC2. Viewing the two plots side by side is very helpful in seeing how the observations and the variables are related. 
+
+```{r, echo = FALSE, out.width = '50%', fig.show='hold'}
+fp02.pca
+lp01.pca
+```
+
+### Loadings
+
+We can then make a plot of the loadings of the variables, which shows us how much the variables load on the principal components, or how much variance each of the variables is contributing to the principal components: 
+```{r, echo = TRUE, fig.height=4}
+# Look at the RMD for where we get the colors
+# Constraints are set to [-1, 1] for both x and y dimensions because these are proportions
+cor.loading <- cor(mfdata, mfpca.res$ExPosition.Data$fi)
+colnames(cor.loading) <- rownames(cor.loading)
+mfpca.fj.corr <- createFactorMap(cor.loading, 
+                                col.points = col4load, 
+                                col.labels = col4load,
+                                constraints = list(minx = -1, miny = -1,  
+                                                   maxx = 1, maxy = 1), 
+                                title = "Variable Loadings"
+                                )
+lp02.pca <- mfpca.fj.corr$zeMap + 
+            addArrows(cor.loading, color = col4load) + 
+            addCircleOfCor() + mfpca.fi.labels
+lp02.pca
+```
+
+**Reading this plot:**  
+The loadings represent how each of the variables contribute to the various dimensions of the space.  
+  - They are calculated as the correlation that each variable has with between the original data and the factor scores.  
+  - The loadings are plotted inside of a circle of radius 1, representing the proportion of variance explained for a given variable.  
+  - The length of an arrow (how close it is to the edge of the circle) shows you how much of that variable is accounted for in the plot shown.  
+  - The angle between any two arrows/points show us the degree to which the two variables are related. The squared cosine of the angle is the correlation coefficient.  
+  - Arrows that are at 0 or 180 degrees from each other represent variables that are completely correlated or completely uncorrelated.  
+  - Arrows at 90 degrees are orthogonal, unrelated, and measure completely different things.  
+  
+  
+It's also helpful to see the loadings alongside the row factor scores. This allows an easier visual comparison between the variables and the observations or groups. When presenting your data, you should always try to present the data in a way that is most comprehensible.  
+
+```{r, echo = FALSE, fig.height=4, fig.show='hold'}
+grid.arrange(as.grob(fp02.pca), as.grob(lp02.pca),
+             ncol=2, top = text_grob(" ", size = 14, face = "bold"))
+```
+
+### Contribution barplots
+**Reading this Plot**  
+The contribution barplots show you how much each variable loading contributes to each principal component and identifies visually which of them are significant in this regard. The contributions plotted here are signed, which gives us both the magnitude and the direction of the contribution.  
+```{r, echo = TRUE}
+# This code creates the plots for the contributions of the loadings. 
+# The next block of code inserts them into the document.
+mfpca.s.ctrJ <- mfpca.res$ExPosition.Data$cj * sign(mfpca.res$ExPosition.Data$fj)
+# plot contributions for component 1
+mfpca.ctrJ.1 <- PrettyBarPlot2(mfpca.s.ctrJ[,1],
+                         threshold = 1 / NROW(mfpca.s.ctrJ),
+                         font.size = 3,
+                         color4bar = col4load, # we need hex code
+                         main = 'Component 1: Variable Contributions (Signed)',
+                         ylab = 'Contributions',
+                         ylim = c(1.2*min(mfpca.s.ctrJ[,1]), 1.2*max(mfpca.s.ctrJ[,1]))
+)
+# plot contributions for component 2
+mfpca.ctrJ.2 <- PrettyBarPlot2(mfpca.s.ctrJ[,2],
+                         threshold = 1 / NROW(mfpca.s.ctrJ),
+                         font.size = 3,
+                         color4bar = col4load, # we need hex code
+                         main = 'Component 2: Variable Contributions (Signed)',
+                         ylab = 'Contributions',
+                         ylim = c(1.2*min(mfpca.s.ctrJ[,2]), 1.2*max(mfpca.s.ctrJ[,2]))
+)
+mfpca.ctrs <- grid.arrange(as.grob(mfpca.ctrJ.1), as.grob(mfpca.ctrJ.2),
+                        ncol=1, top = text_grob("Contribution barplots", 
+                                                size = 14, face = "bold")) 
+```
+
+```{r, echo=FALSE}
+# Here we can save all figures to a PowerPoint
+# savedList <- saveGraph2pptx(file2Save.pptx = 'AllFigures', 
+#                            title = 'All Figures', 
+#                            addGraphNames = TRUE)
+```
+
+## Conclusions
+ *  **Component 1**  
+    + The first principal component separates observations of Metal on one end and Pop and Classical on one end. 
+    + For variables, the first component separates odd and even [MFCCs](#MFCCs) greater than 2. Knowing what we know about these variables, it makes sense that odd and even are separated. 
+    +  Interpretation: Although metal seems to have different spectral components from classical and pop, there must be another variable or set of variables that are separating classical from pop on the second dimension. This may be a measure of distortion, or 'cleanliness' of signal. Rock is also trending to that side of the component. Perhaps further analyses will clarify what the first component represents.
+
+ * **Component 2**  
+    + The second principal component separates observations of Pop on one end and Classical on the other. 
+    + For variables, the second component separates MFCC 1 and the other named spectral components on one end and MFCC2 on the other. 
+    + Interpretation: Because we see the electronically produced genres like pop and hip hop tending towards one end of the second principal component and acoustically recorded genres like classical, blues, and jazz, we can gather that the acoustically produced music has lower extreme spectral components than electronically produced music.  
+  
+ * **About the Variables**: Remember that this technique is about understanding how the variables work at a deeper level. One thing that we can learn from this is that the MFCCs greater than two, odd and even, are anti-correlated with each other. This basically means that they're measuring the same thing. Likewise, since MFCC 1 and 2 are essentially orthogonal to the other MFCCs, that tells us they're measuring different things. If MFCCs 1 and 2 and the named spectral components measure the width and breadth of the audio spectrum in a file, maybe the first dimension (the other MFCCs) represent the wave forms of the files. While we might think that the first of those measurements would be more important than the second in terms of macro measurements for these files, but remember that this technique handles the data impartially, based on which variables ;provide the most inertia. In this case, because we have 20 variables (the MFCCs) that measure the wave form, and only 8 that are named and measure the shape of the spectrum, that preponderance of information is what's going to drive the first component. Luckily we have some other analyses further along in the cookbook that break the variables down a little more to tease apart those relationships.

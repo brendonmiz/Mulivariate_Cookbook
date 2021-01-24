@@ -1,0 +1,24 @@
+bookdown::gitbook:
+  css: style.css
+  config:
+  split_by: none
+  lib_dir: assets
+
+bookdown::html_book:
+  theme: default
+  includes:
+    in_header: preamble.tex
+  citation_package: natbib
+  toolbar:
+    position: static  
+  latex_engine: xelatex
+  keep_tex: yes
+  toc: true
+  toc_depth: 1
+
+bookdown::pdf_book:
+  includes:
+    in_header: 
+  latex_engine: pdflatex
+  keep_tex: yes  
+
