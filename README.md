@@ -27,4 +27,4 @@ Chapters:
 
 Appendix: Mel-Frequency Cepstral Coefficients
 
-Although the link indicates that this is TEX, the analysis was performed in R Markdown using R and compiled to an HTML format.
+Although the link indicates that this is TEX, the analysis was performed in R Markdown using R and compiled to a PDF using MikTex from within R Studio.
